@@ -7,8 +7,11 @@ const formData = [];
 const filePath = 'formData.xlsx';
 const yandexToken = 'y0_AgAAAAAd6OM6AADLWwAAAAEbwtsLAABl-sQ_6M9EUoqN5Hd_l3y5h3gMzg';
 const remotePath = '/Заявки.xlsx';
+const schedule = require('node-schedule');
+const ADMIN_ID = '5503846931';
 
 const userSessions = {};
+const registeredUsers = [];
 
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
@@ -61,6 +64,10 @@ bot.on('message', async (msg) => {
         } else {
             await handleStep(chatId, text, session);
         }
+    } else if (text === '/admin' && chatId.toString() === ADMIN_ID) {
+        sendAdminPanel(chatId);
+    } else if (text === '/admin') {
+        bot.sendMessage(chatId, 'У вас нет доступа к админ-панели.');
     }
 });
 
@@ -284,6 +291,12 @@ bot.on('callback_query', async (query) => {
         session.formData.consent = true;
 
         formData.push(session.formData);
+        registeredUsers.push({
+            chatId,
+            childName: session.formData.childName,
+            date: session.formData.date,
+            address: session.formData.address
+        })
 
         saveToExcel(formData, filePath);
 
@@ -292,6 +305,25 @@ bot.on('callback_query', async (query) => {
         await bot.sendMessage(chatId, "Спасибо, что записались к нам! В ближайшее время с Вами свяжутся для подтверждения записи.");
         delete userSessions[chatId];
         await sendMainMenu(chatId);
+    } else if (data === 'view_requests') {
+        const requests = formData.map((req, index) => `${index + 1}. ${req.childName}, ${req.date}, ${req.phone}`).join('\n');
+        await bot.sendMessage(chatId, `Текущие заявки:\n\n${requests}`);
+    } else if (data === 'set_digest') {
+        await bot.sendMessage(chatId, 'Отправьте ссылки на дайджест (по одной ссылке на строку):');
+        bot.once('message', async (msg) => {
+            const links = msg.text.split('\n');
+            setDigestLinks(links);
+            await bot.sendMessage(chatId, 'Дайджест обновлен.');
+        });
+    } else if (data === 'send_post') {
+        await bot.sendMessage(chatId, 'Введите текст поста:');
+        bot.once('message', async (msg) => {
+            const post = msg.text;
+            for (const user of registeredUsers) {
+                await bot.sendMessage(user.chatId, post);
+            }
+            await bot.sendMessage(chatId, 'Пост отправлен.');
+        })
     }
 
     // Удаляем отметку "typing..." у сообщения с инлайн-кнопками
@@ -366,4 +398,47 @@ async function uploadToYandexDisk(filePath, yandexToken, remotePath) {
     } catch (error) {
         console.error("Ошибка при загрузке на Яндекс.Диск:", error.response?.data)
     }
+}
+
+function sendReminders() {
+    const saturdayEvening = schedule.scheduleJob('0 18 ** 6', async () => {
+        for (const user of registeredUsers) {
+            const sessionDate = moment(user.date, 'DD.MM.YYYY');
+            if (sessionDate.isSame(moment().add(1, 'day'), 'day')) {
+                await bot.sendMessage(user.chatId, `Напоминалка! ${user.childName} записан завтра в клуб. Ждем вас на встрече! ${user.date} по адресу: ${user.address}`);
+            }
+        }
+    });
+}
+
+sendReminders();
+
+const monthlyDigest = schedule.scheduleJob('0 12 1 * *', async () => {
+    const digestLinks = getDigestLinks();
+    const message = `Доброго дня! В нашем телеграм-канале мы постоянно публикуем полезные посты. Вот наша подборка статей и материалов за месяц:\n\n${digestLinks.join('\n')}`;
+
+    for (const user of registeredUsers) {
+        await bot.sendMessage(user.chatId, message);
+    }
+});
+
+let digestLinks = [];
+function setDigestLinks(newLinks) {
+    digestLinks = newLinks;
+}
+
+function getDigestLinks() {
+    return digestLinks;
+}
+
+async function sendAdminPanel(chatId) {
+    await bot.sendMessage(chatId, 'Добро пожаловать в админ-панель. Выберите действие:', {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: 'Посмотреть заявки', callback_data: 'view_requests' }],
+                [{ text: 'Настроить дайджест', callback_data: 'set_digest' }],
+                [{ text: 'Отправить пост', callback_data: 'send_post' }]
+            ]
+        }
+    });
 }
