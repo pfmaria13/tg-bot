@@ -1,9 +1,14 @@
 const TelegramBot = require('node-telegram-bot-api');
+const moment = require('moment')
 const token = '7683360802:AAEnz8xS-9FcG3PAK1IhDnr9o4McLo7WQYc';
 const bot = new TelegramBot(token, {polling: true});
+const fs = require('fs');
+const formData = [];
+const filePath = 'formData.xlsx';
+const yandexToken = 'y0_AgAAAAAd6OM6AADLWwAAAAEbwtsLAABl-sQ_6M9EUoqN5Hd_l3y5h3gMzg';
+const remotePath = '/Заявки.xlsx';
 
 const userSessions = {};
-
 
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
@@ -36,7 +41,7 @@ bot.on('message', async (msg) => {
         await bot.sendMessage(chatId, "Клуб сочетает в себе психологические тренинговые упражнения, которые направлены как на отработку и закрепление практических навыков, так и на знакомство с собой. С другой стороны здесь можно почувствовать созидательную атмосферу, где ребята могут пообщаться друг с другом и поиграть в настолки.\n\nКакой адрес?", {
             reply_markup: {
                 keyboard: [
-                    [{ text: "пр. Космонавтов, 52А (Уралмаш)" }, { text: "ул. Лучистая, 8 (Солнечный)" }],
+                    [{ text: "пр. Космонавтов, 52А (Уралмаш)" }],
                     [{ text: "Назад" }]
                 ],
                 resize_keyboard: true
@@ -84,12 +89,14 @@ async function sendMainMenu(chatId, withMessage) {
 async function handleStep(chatId, text, session) {
     switch (session.step) {
         case 1:
+            const sundays = generateUpcomingSundays(5);
+
             session.formData.address = text;
             session.step++;
-            await bot.sendMessage(chatId, "Когда хотели бы прийти?", {
+            await bot.sendMessage(chatId, "Расписание, выберите удобную дату:", {
                 reply_markup: {
                     keyboard: [
-                        [{ text: "В ближайшее воскресенье" }, { text: "В другой раз, но хотели бы записаться" }],
+                        ...sundays.map((date) => [{ text: date }]),
                         [{ text: "Назад" }]
                     ],
                     resize_keyboard: true
@@ -180,7 +187,7 @@ async function sendPreviousStep(chatId, session) {
             await bot.sendMessage(chatId, "Какой адрес?", {
                 reply_markup: {
                     keyboard: [
-                        [{ text: "пр. Космонавтов, 52А (Уралмаш)" }, { text: "ул. Лучистая, 8 (Солнечный)" }],
+                        [{ text: "пр. Космонавтов, 52А (Уралмаш)" }],
                         [{ text: "Назад" }]
                     ],
                     resize_keyboard: true
@@ -188,14 +195,14 @@ async function sendPreviousStep(chatId, session) {
             });
             break;
         case 2:
-            await bot.sendMessage(chatId, "Когда хотели бы прийти?", {
-                reply_markup: {
-                    keyboard: [
-                        [{ text: "В ближайшее воскресенье" }, { text: "В другой раз, но хотели бы записаться" }],
-                        [{ text: "Назад" }]
-                    ],
-                    resize_keyboard: true
-                }
+            const sundays = generateUpcomingSundays(5);
+
+            await bot.sendMessage(chatId, "Расписание, выберите удобную дату:", {
+                keyboard: [
+                    ...sundays.map((date) => [{ text: date }]),
+                    [{ text: "Назад" }]
+                ],
+                resize_keyboard: true
             });
             break;
         case 3:
@@ -276,7 +283,11 @@ bot.on('callback_query', async (query) => {
         const session = userSessions[chatId];
         session.formData.consent = true;
 
-        saveToCRM(session.formData)
+        formData.push(session.formData);
+
+        saveToExcel(formData, filePath);
+
+        await uploadToYandexDisk(filePath, yandexToken, remotePath);
 
         await bot.sendMessage(chatId, "Спасибо, что записались к нам! В ближайшее время с Вами свяжутся для подтверждения записи.");
         delete userSessions[chatId];
@@ -289,4 +300,70 @@ bot.on('callback_query', async (query) => {
 
 function saveToCRM(formData) {
     console.log("Сохраненные данные:", formData)
+}
+
+function generateUpcomingSundays(count) {
+    const sundays = [];
+    let currentDate = moment().startOf('day');
+
+    if (currentDate.day() !== 0) {
+        currentDate = currentDate.add(7 - currentDate.day(), 'days');
+    }
+
+    for (let i = 0; i < count; i++) {
+        const sunday = currentDate.clone().add(i * 7, 'days');
+        sundays.push(sunday.format('DD.MM.YYYY, вс, 12:00-15:00'));
+    }
+
+    return sundays;
+}
+
+const XLSX = require('xlsx');
+
+function saveToExcel(formData, filePath) {
+    const data = formData.map((entry, index) => ({
+        ID: index + 1,
+        Адрес: entry.address,
+        Дата: entry.date,
+        "Имя родителя": entry.parentName,
+        "Имя ребенка": entry.childName,
+        Пол: entry.gender,
+        Возраст: entry.age,
+        Запрос: entry.request,
+        Телефон: entry.phone
+    }));
+
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Заявки");
+
+    XLSX.writeFile(workbook, filePath);
+
+    console.log("Данные сохранены в Excel!");
+}
+
+const axios = require('axios');
+
+async function uploadToYandexDisk(filePath, yandexToken, remotePath) {
+    try {
+        const getUploadUrl = `https://cloud-api.yandex.net/v1/disk/resources/upload?path=${remotePath}&overwrite=true`;
+        const response = await axios.get(getUploadUrl, {
+            headers: {
+                Authorization: `OAuth ${yandexToken}`
+            }
+        });
+
+        const uploadUrl = response.data.href;
+
+        const fileStream = fs.createReadStream(filePath);
+        await axios.put(uploadUrl, fileStream, {
+            headers: {
+                "Content-Type": 'application/octet-stream'
+            }
+        });
+
+        console.log("Файл успешно загружен на Яндекс.Диск!");
+    } catch (error) {
+        console.error("Ошибка при загрузке на Яндекс.Диск:", error.response?.data)
+    }
 }
