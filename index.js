@@ -23,12 +23,17 @@ bot.on('message', async (msg) => {
         await bot.sendMessage(chatId, "Выберите вопрос, чтобы узнать подробнее:", {
             reply_markup: {
                 inline_keyboard: [
-                    [{ text: "Сколько длится занятие в клубе?", callback_data: "duration" }],
-                    [{ text: "Стоимость клуба", callback_data: "cost" }],
-                    [{ text: "Кому нужен клуб?", callback_data: "who_needs" }]
+                    [{ text: "Как проходит клуб?", callback_data: "club" }],
+                    [{ text: "Какова стоимость занятий?", callback_data: "cost" }],
+                    [{ text: "Где и когда проходят встречи?", callback_data: "where_and_when" }],
+                    [{ text: "Как записаться?", callback_data: "sign_up"}]
                 ]
             }
         });
+    }  else if (text === 'Cвязаться с нами') {
+        await bot.sendMessage(chatId,  "Связаться и узнать ответы на интересующие вопросы можно через Полину\n" +
+            "тг: @polinakuzminyh\n" +
+            "телефон: +79122571526");
     }  else if (text === 'Подробнее о сообществе') {
         await bot.sendMessage(chatId,  "Мы психологи <a href='https://www.ukno.ru/'>Уральского клуба нового образования.</a> Вместе ездим проводить тренинговые программы для подростков в разные города Урала, выезжаем на проектные смены <a href='https://ukno.ru/project/tehnolider_camp/'>ТехноЛидер,</a> ведем подростковый клуб, проводим тренинги, консультируем подростков и родителей. \n" +
             "Психологическое направление в УКНО имеет большую историю и опыт (более 20 лет) по работе с подростками и молодежью. Мы поддерживаем эти знания, передавая опыт в процессе обучения, и адаптируем их под запросы и сложности современного мира. \n" +
@@ -279,13 +284,20 @@ bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const data = query.data;
 
-    if (data === "duration") {
-        await bot.sendMessage(chatId, "Сколько длится занятие в клубе?\n\n3 часа! В течении этого времени");
+    if (data === "club") {
+        await bot.sendMessage(chatId, "Как проходит клуб?\n\nКлуб проходит в формате групповых встреч с профессиональным психологом. Каждое занятие включает обсуждение, практические задания и обратную связь.");
     } else if (data === "cost") {
-        await bot.sendMessage(chatId, "Стоимость клуба:\n\nРазовое посещение – 1800 руб\n" +
-            "Абонемент на 4 занятия – 6000 руб");
-    } else if (data === "who_needs") {
-        await bot.sendMessage(chatId, "Кому нужен клуб?\n\n...");
+        await bot.sendMessage(chatId, "Какова стоимость занятий?\n\nСтоимость разового посещения – 1800 руб, абонемент на 4 занятия – 6000 руб.");
+    } else if (data === "where_and_when") {
+        await bot.sendMessage(chatId, "Где и когда проходят встречи?\n\nМероприятия проводятся по адресу [вставить адрес]. Расписание доступно [ссылка на расписание].");
+    } else if (data === "sign_up") {
+        await bot.sendMessage(chatId, "Как записаться?\n\nДля записи заполните форму ниже.", {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "Записаться в клуб", callback_data: "club" }]
+                ]
+            }
+        });
     } else if (data === "agree" && userSessions[chatId]) {
         const session = userSessions[chatId];
         session.formData.consent = true;
