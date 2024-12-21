@@ -73,6 +73,8 @@ bot.on('message', async (msg) => {
         sendAdminPanel(chatId);
     } else if (text === '/admin') {
         bot.sendMessage(chatId, 'У вас нет доступа к админ-панели.');
+    } else {
+        await sendMainMenu(chatId);
     }
 });
 
@@ -101,10 +103,22 @@ async function sendMainMenu(chatId, withMessage) {
 async function handleStep(chatId, text, session) {
     switch (session.step) {
         case 1:
-            const sundays = generateUpcomingSundays(5);
+            if (text !== "пр. Космонавтов, 52А (Уралмаш)") {
+                await bot.sendMessage(chatId, "Вы ввели некорректный адрес. Пожалуйста, выберите из предложенных вариантов:", {
+                    reply_markup: {
+                        keyboard: [
+                            [{ text: "пр. Космонавтов, 52А (Уралмаш)" }],
+                            [{ text: "Назад" }]
+                        ],
+                        resize_keyboard: true
+                    }
+                });
+                return;
+            }
 
             session.formData.address = text;
             session.step++;
+            const sundays = generateUpcomingSundays(5);
             await bot.sendMessage(chatId, "Расписание, выберите удобную дату:", {
                 reply_markup: {
                     keyboard: [
@@ -116,17 +130,41 @@ async function handleStep(chatId, text, session) {
             });
             break;
         case 2:
+            const validDateFormat = /^\d{2}\.\d{2}\.\d{4}, вс, 12:00-15:00$/;
+            if (!validDateFormat.test(text)) {
+                await bot.sendMessage(chatId, "Некорректный формат даты. Выберите из предложенных вариантов:", {
+                    reply_markup: {
+                        keyboard: [
+                            ...generateUpcomingSundays(5).map((date) => [{ text: date }]),
+                            [{ text: "Назад" }]
+                        ],
+                        resize_keyboard: true
+                    }
+                });
+                return;
+            }
+
             session.formData.date = text;
             session.step++;
             await bot.sendMessage(chatId, "Как Вас зовут?", {
-                reply_markup: { remove_keyboard: true }
+                reply_markup: {
+                    keyboard: [
+                        [{ text: "Назад" }]
+                    ],
+                    resize_keyboard: true
+                }
             });
             break;
         case 3:
             session.formData.parentName = text;
             session.step++;
             await bot.sendMessage(chatId, "Как зовут ребенка, которого хотите записать на клуб?", {
-                reply_markup: { remove_keyboard: true }
+                reply_markup: {
+                    keyboard: [
+                        [{ text: "Назад" }]
+                    ],
+                    resize_keyboard: true
+                }
             });
             break;
         case 4:
@@ -143,6 +181,19 @@ async function handleStep(chatId, text, session) {
             });
             break;
         case 5:
+            if (text !== "Мужской" && text !== "Женский") {
+                await bot.sendMessage(chatId, "Вы ввели некорректный пол. Пожалуйста, выберите один из вариантов:", {
+                    reply_markup: {
+                        keyboard: [
+                            [{ text: "Мужской" }, { text: "Женский" }],
+                            [{ text: "Назад" }]
+                        ],
+                        resize_keyboard: true
+                    }
+                });
+                return;
+            }
+
             session.formData.gender = text;
             session.step++;
             await bot.sendMessage(chatId, "Возраст ребенка?", {
@@ -157,6 +208,20 @@ async function handleStep(chatId, text, session) {
             });
             break;
         case 6:
+            if (!["12", "13", "14", "15", "16", "17"].includes(text)) {
+                await bot.sendMessage(chatId, "Вы ввели некорректный возраст. Пожалуйста, выберите один из вариантов:", {
+                    reply_markup: {
+                        keyboard: [
+                            [{ text: "12" }, { text: "13" }, { text: "14" }],
+                            [{ text: "15" }, { text: "16" }, { text: "17" }],
+                            [{ text: "Назад" }]
+                        ],
+                        resize_keyboard: true
+                    }
+                });
+                return;
+            }
+
             session.formData.age = text;
             session.step++;
             await bot.sendMessage(chatId, "Какой запрос на клуб?", {
@@ -210,21 +275,29 @@ async function sendPreviousStep(chatId, session) {
             const sundays = generateUpcomingSundays(5);
 
             await bot.sendMessage(chatId, "Расписание, выберите удобную дату:", {
-                keyboard: [
-                    ...sundays.map((date) => [{ text: date }]),
-                    [{ text: "Назад" }]
-                ],
-                resize_keyboard: true
+                reply_markup: {
+                    keyboard: [
+                        ...sundays.map((date) => [{text: date}]),
+                        [{text: "Назад"}]
+                    ],
+                    resize_keyboard: true
+                }
             });
             break;
         case 3:
             await bot.sendMessage(chatId, "Как Вас зовут?", {
-                reply_markup: { remove_keyboard: true }
+                reply_markup: {
+                    keyboard: [[{ text: "Назад" }]],
+                    resize_keyboard: true
+                }
             });
             break;
         case 4:
             await bot.sendMessage(chatId, "Как зовут ребенка, которого хотите записать на клуб?", {
-                reply_markup: { remove_keyboard: true }
+                reply_markup: {
+                    keyboard: [[{ text: "Назад" }]],
+                    resize_keyboard: true
+                }
             });
             break;
         case 5:
@@ -293,8 +366,8 @@ bot.on('callback_query', async (query) => {
     } else if (data === "sign_up") {
         await bot.sendMessage(chatId, "Как записаться?\n\nДля записи заполните форму ниже.", {
             reply_markup: {
-                inline_keyboard: [
-                    [{ text: "Записаться в клуб", callback_data: "club" }]
+                keyboard: [
+                    [{ text: "Записаться в клуб"}]
                 ]
             }
         });
