@@ -18,7 +18,15 @@ bot.on('message', async (msg) => {
     const text = msg.text;
 
     if (text === '/start') {
-        await sendMainMenu(chatId, true);
+        try {
+            await sendMainMenu(chatId, true);
+        } catch (err) {
+            if (err.response?.body?.error_code === 403) {
+                console.log(`Пользователь ${chatId} заблокировал бота.`);
+            } else {
+                console.log(`Ошибка при отправке сообщения пользователю ${chatId}:`, err);
+            }
+        }
     } else if (text === "Вопросы") {
         await bot.sendMessage(chatId, "Выберите вопрос, чтобы узнать подробнее:", {
             reply_markup: {
@@ -391,8 +399,7 @@ bot.on('callback_query', async (query) => {
         delete userSessions[chatId];
         await sendMainMenu(chatId);
     } else if (data === 'view_requests') {
-        const requests = formData.map((req, index) => `${index + 1}. ${req.childName}, ${req.date}, ${req.phone}`).join('\n');
-        await bot.sendMessage(chatId, `Текущие заявки:\n\n${requests}`);
+        await viewRequestsFromExcel(filePath, chatId);
     } else if (data === 'set_digest') {
         await bot.sendMessage(chatId, 'Отправьте ссылки на дайджест (по одной ссылке на строку):');
         bot.once('message', async (msg) => {
@@ -438,8 +445,16 @@ function generateUpcomingSundays(count) {
 const XLSX = require('xlsx');
 
 function saveToExcel(formData, filePath) {
-    const data = formData.map((entry, index) => ({
-        ID: index + 1,
+    let existingData = [];
+
+    if (fs.existsSync(filePath)) {
+        const workbook = XLSX.readFile(filePath);
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        existingData = XLSX.utils.sheet_to_json(worksheet);
+    }
+
+    const updatedData = [...existingData, ...formData.map((entry, index) => ({
+        ID: existingData.length + index + 1,
         Адрес: entry.address,
         Дата: entry.date,
         "Имя родителя": entry.parentName,
@@ -448,10 +463,10 @@ function saveToExcel(formData, filePath) {
         Возраст: entry.age,
         Запрос: entry.request,
         Телефон: entry.phone
-    }));
+    }))];
 
     const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.json_to_sheet(data);
+    const worksheet = XLSX.utils.json_to_sheet(updatedData);
     XLSX.utils.book_append_sheet(workbook, worksheet, "Заявки");
 
     XLSX.writeFile(workbook, filePath);
@@ -463,6 +478,10 @@ const axios = require('axios');
 
 async function uploadToYandexDisk(filePath, yandexToken, remotePath) {
     try {
+        const tempFilePath = `${filePath}.temp`;
+
+        fs.copyFileSync(filePath, tempFilePath);
+
         const getUploadUrl = `https://cloud-api.yandex.net/v1/disk/resources/upload?path=${remotePath}&overwrite=true`;
         const response = await axios.get(getUploadUrl, {
             headers: {
@@ -472,7 +491,7 @@ async function uploadToYandexDisk(filePath, yandexToken, remotePath) {
 
         const uploadUrl = response.data.href;
 
-        const fileStream = fs.createReadStream(filePath);
+        const fileStream = fs.createReadStream(tempFilePath);
         await axios.put(uploadUrl, fileStream, {
             headers: {
                 "Content-Type": 'application/octet-stream'
@@ -480,9 +499,33 @@ async function uploadToYandexDisk(filePath, yandexToken, remotePath) {
         });
 
         console.log("Файл успешно загружен на Яндекс.Диск!");
+
+        fs.unlinkSync(tempFilePath);
     } catch (error) {
-        console.error("Ошибка при загрузке на Яндекс.Диск:", error.response?.data)
+        console.error("Ошибка при загрузке на Яндекс.Диск:", error.response?.data || error.message);
     }
+}
+
+async function viewRequestsFromExcel(filePath, chatId) {
+    if (!fs.existsSync(filePath)) {
+        await bot.sendMessage(chatId, "Таблица с заявками пока пуста.");
+        return;
+    }
+
+    const workbook = XLSX.readFile(filePath);
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    if (data.length === 0) {
+        await bot.sendMessage(chatId, "Таблица с заявками пуста.");
+        return;
+    }
+
+    const formattedRequests = data.map((entry, index) =>
+        `${index + 1}. Имя ребенка: ${entry["Имя ребенка"]}, Дата: ${entry["Дата"]}, Телефон: ${entry["Телефон"]}`
+    ).join("\n");
+
+    await bot.sendMessage(chatId, `Текущие заявки:\n\n${formattedRequests}`);
 }
 
 function sendReminders() {
