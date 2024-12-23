@@ -1,14 +1,15 @@
+require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const moment = require('moment')
-const token = '7683360802:AAEnz8xS-9FcG3PAK1IhDnr9o4McLo7WQYc';
+const token = process.env.TOKEN;
+const yandexToken = process.env.YANDEX_TOKEN;
+const adminId = process.env.ADMIN_ID;
 const bot = new TelegramBot(token, {polling: true});
 const fs = require('fs');
 const formData = [];
 const filePath = 'formData.xlsx';
-const yandexToken = 'y0_AgAAAAAd6OM6AADLWwAAAAEbwtsLAABl-sQ_6M9EUoqN5Hd_l3y5h3gMzg';
 const remotePath = '/Заявки.xlsx';
 const schedule = require('node-schedule');
-const ADMIN_ID = '5503846931';
 
 const userSessions = {};
 const registeredUsers = [];
@@ -77,7 +78,7 @@ bot.on('message', async (msg) => {
         } else {
             await handleStep(chatId, text, session);
         }
-    } else if (text === '/admin' && chatId.toString() === ADMIN_ID) {
+    } else if (text === '/admin' && chatId.toString() === adminId) {
         sendAdminPanel(chatId);
     } else if (text === '/admin') {
         bot.sendMessage(chatId, 'У вас нет доступа к админ-панели.');
@@ -375,8 +376,9 @@ bot.on('callback_query', async (query) => {
         await bot.sendMessage(chatId, "Как записаться?\n\nДля записи заполните форму ниже.", {
             reply_markup: {
                 keyboard: [
-                    [{ text: "Записаться в клуб"}]
-                ]
+                    [{ text: "Записаться в клуб"}],
+                ],
+                resize_keyboard: true
             }
         });
     } else if (data === "agree" && userSessions[chatId]) {
@@ -478,10 +480,6 @@ const axios = require('axios');
 
 async function uploadToYandexDisk(filePath, yandexToken, remotePath) {
     try {
-        const tempFilePath = `${filePath}.temp`;
-
-        fs.copyFileSync(filePath, tempFilePath);
-
         const getUploadUrl = `https://cloud-api.yandex.net/v1/disk/resources/upload?path=${remotePath}&overwrite=true`;
         const response = await axios.get(getUploadUrl, {
             headers: {
@@ -491,7 +489,7 @@ async function uploadToYandexDisk(filePath, yandexToken, remotePath) {
 
         const uploadUrl = response.data.href;
 
-        const fileStream = fs.createReadStream(tempFilePath);
+        const fileStream = fs.createReadStream(filePath);
         await axios.put(uploadUrl, fileStream, {
             headers: {
                 "Content-Type": 'application/octet-stream'
@@ -499,8 +497,6 @@ async function uploadToYandexDisk(filePath, yandexToken, remotePath) {
         });
 
         console.log("Файл успешно загружен на Яндекс.Диск!");
-
-        fs.unlinkSync(tempFilePath);
     } catch (error) {
         console.error("Ошибка при загрузке на Яндекс.Диск:", error.response?.data || error.message);
     }
