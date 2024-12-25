@@ -6,13 +6,12 @@ const yandexToken = process.env.YANDEX_TOKEN;
 const adminId = process.env.ADMIN_ID;
 const bot = new TelegramBot(token, {polling: true});
 const fs = require('fs');
-const formData = [];
+let formData = [];
 const filePath = 'formData.xlsx';
 const remotePath = '/Заявки.xlsx';
 const schedule = require('node-schedule');
 
 const userSessions = {};
-const registeredUsers = [];
 
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
@@ -54,15 +53,37 @@ bot.on('message', async (msg) => {
             "• работа с организациями \n" +
             "\n", { parse_mode: 'HTML' } );
     } else if (text === "Записаться в клуб") {
-        userSessions[chatId] = { step: 1, formData: {} };
+        userSessions[chatId] = {step: 1, formData: {}};
         await bot.sendMessage(chatId, "Клуб сочетает в себе психологические тренинговые упражнения, которые направлены как на отработку и закрепление практических навыков, так и на знакомство с собой. С другой стороны здесь можно почувствовать созидательную атмосферу, где ребята могут пообщаться друг с другом и поиграть в настолки.\n\nКакой адрес?", {
             reply_markup: {
                 keyboard: [
-                    [{ text: "пр. Космонавтов, 52А (Уралмаш)" }],
-                    [{ text: "Назад" }]
+                    [{text: "пр. Космонавтов, 52А (Уралмаш)"}],
+                    [{text: "Назад"}]
                 ],
                 resize_keyboard: true
             }
+        });
+    } else if (text === "Мои записи") {
+        if (!fs.existsSync(filePath)) {
+            await bot.sendMessage(chatId, "Записи отсутствуют.");
+            return;
+        }
+
+        const workbook = XLSX.readFile(filePath);
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(worksheet);
+
+        const userRequests = data.filter(entry => entry["chatId"] === chatId);
+        if (userRequests.length === 0) {
+            await bot.sendMessage(chatId, "У Вас нет активных записей.");
+            return;
+        }
+
+        const uniqueDates = [...new Set(userRequests.map(entry => entry["Дата"]))];
+        const buttons = uniqueDates.map(date => [{ text: date, callback_data: `user_date_${date}` }]);
+
+        await bot.sendMessage(chatId, "Выберите дату для просмотра Ваших записей:", {
+            reply_markup: { inline_keyboard: buttons }
         });
     } else if (userSessions[chatId]) {
         const session = userSessions[chatId];
@@ -79,9 +100,9 @@ bot.on('message', async (msg) => {
             await handleStep(chatId, text, session);
         }
     } else if (text === '/admin' && chatId.toString() === adminId) {
-        sendAdminPanel(chatId);
+        await sendAdminPanel(chatId);
     } else if (text === '/admin') {
-        bot.sendMessage(chatId, 'У вас нет доступа к админ-панели.');
+        await bot.sendMessage(chatId, 'У вас нет доступа к админ-панели.');
     } else {
         await sendMainMenu(chatId);
     }
@@ -91,8 +112,8 @@ async function sendMainMenu(chatId, withMessage) {
     const options = {
         reply_markup: {
             keyboard: [
-                [{text: "Записаться в клуб"}, {text: "Вопросы"}],
-                [{text: "Cвязаться с нами"} ,{text: "Подробнее о сообществе"}],
+                [{text: "Записаться в клуб"}, {text: "Мои записи"}],
+                [{text: "Cвязаться с нами"}, {text: "Подробнее о сообществе"}, {text: "Вопросы"}],
                 [{text: "Записаться на консультацию к психологу"}]
             ],
             resize_keyboard: true
@@ -234,7 +255,10 @@ async function handleStep(chatId, text, session) {
             session.formData.age = text;
             session.step++;
             await bot.sendMessage(chatId, "Какой запрос на клуб?", {
-                reply_markup: { remove_keyboard: true }
+                reply_markup: {
+                    keyboard: [[{ text: "Назад" }]],
+                    resize_keyboard: true
+                }
             });
             break;
         case 7:
@@ -334,7 +358,10 @@ async function sendPreviousStep(chatId, session) {
             break;
         case 7:
             await bot.sendMessage(chatId, "Какой запрос на клуб?", {
-                reply_markup: { remove_keyboard: true }
+                reply_markup: {
+                    keyboard: [[{ text: "Назад" }]],
+                    resize_keyboard: true
+                }
             });
             break;
         case 8:
@@ -366,6 +393,8 @@ bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const data = query.data;
 
+    // await bot.answerCallbackQuery(query.id);
+
     if (data === "club") {
         await bot.sendMessage(chatId, "Как проходит клуб?\n\nКлуб проходит в формате групповых встреч с профессиональным психологом. Каждое занятие включает обсуждение, практические задания и обратную связь.");
     } else if (data === "cost") {
@@ -384,16 +413,13 @@ bot.on('callback_query', async (query) => {
     } else if (data === "agree" && userSessions[chatId]) {
         const session = userSessions[chatId];
         session.formData.consent = true;
+        session.formData.chatId = chatId;
 
         formData.push(session.formData);
-        registeredUsers.push({
-            chatId,
-            childName: session.formData.childName,
-            date: session.formData.date,
-            address: session.formData.address
-        })
 
-        saveToExcel(formData, filePath);
+        saveToExcel(formData, filePath, chatId);
+
+        formData = [];
 
         await uploadToYandexDisk(filePath, yandexToken, remotePath);
 
@@ -401,7 +427,39 @@ bot.on('callback_query', async (query) => {
         delete userSessions[chatId];
         await sendMainMenu(chatId);
     } else if (data === 'view_requests') {
-        await viewRequestsFromExcel(filePath, chatId);
+        await bot.sendMessage(chatId, "Выберите тип заявок:", {
+            reply_markup: {
+                inline_keyboard: [
+                    [{text: "Прошедшие заявки", callback_data: "past_requests"}],
+                    [{text: "Будущие заявки", callback_data: "future_requests"}]
+                ]
+            }
+        });
+    } else if (data === 'past_requests') {
+        await sendDateSelection(chatId, "past");
+    } else if (data === 'future_requests') {
+        await sendDateSelection(chatId, "future");
+    } else if (data.startsWith("date_")) {
+        const selectedDate = data.replace("date_", "");
+        await viewRequestsByDate(chatId, selectedDate);
+    } else if (data.startsWith("user_date_")) {
+        const selectedDate = data.replace("user_date_", "");
+        const workbook = XLSX.readFile(filePath);
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        const allData = XLSX.utils.sheet_to_json(worksheet);
+
+        const filteredRequests = allData.filter(entry => entry["chatId"] === chatId && entry["Дата"] === selectedDate);
+
+        if (filteredRequests.length === 0) {
+            await bot.sendMessage(chatId, `На ${selectedDate} записи отсутствуют.`);
+            return;
+        }
+
+        const formattedRequests = filteredRequests.map((entry, index) =>
+            `${index + 1}. Имя ребенка: ${entry["Имя ребенка"]}, Запрос: ${entry["Запрос"]}`
+        ).join("\n");
+
+        await bot.sendMessage(chatId, `Ваши записи на ${selectedDate}:\n\n${formattedRequests}`);
     } else if (data === 'set_digest') {
         await bot.sendMessage(chatId, 'Отправьте ссылки на дайджест (по одной ссылке на строку):');
         bot.once('message', async (msg) => {
@@ -412,21 +470,18 @@ bot.on('callback_query', async (query) => {
     } else if (data === 'send_post') {
         await bot.sendMessage(chatId, 'Введите текст поста:');
         bot.once('message', async (msg) => {
+            const workbook = XLSX.readFile(filePath);
+            const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+            const data = XLSX.utils.sheet_to_json(worksheet);
+
             const post = msg.text;
             for (const user of registeredUsers) {
                 await bot.sendMessage(user.chatId, post);
             }
             await bot.sendMessage(chatId, 'Пост отправлен.');
-        })
+        });
     }
-
-    // Удаляем отметку "typing..." у сообщения с инлайн-кнопками
-    await bot.answerCallbackQuery(query.id);
 });
-
-function saveToCRM(formData) {
-    console.log("Сохраненные данные:", formData)
-}
 
 function generateUpcomingSundays(count) {
     const sundays = [];
@@ -446,7 +501,7 @@ function generateUpcomingSundays(count) {
 
 const XLSX = require('xlsx');
 
-function saveToExcel(formData, filePath) {
+function saveToExcel(formData, filePath, chatId) {
     let existingData = [];
 
     if (fs.existsSync(filePath)) {
@@ -457,6 +512,7 @@ function saveToExcel(formData, filePath) {
 
     const updatedData = [...existingData, ...formData.map((entry, index) => ({
         ID: existingData.length + index + 1,
+        chatId: chatId,
         Адрес: entry.address,
         Дата: entry.date,
         "Имя родителя": entry.parentName,
@@ -473,7 +529,7 @@ function saveToExcel(formData, filePath) {
 
     XLSX.writeFile(workbook, filePath);
 
-    console.log("Данные сохранены в Excel!");
+    console.log("Данные сохранены в Excel!", updatedData);
 }
 
 const axios = require('axios');
@@ -502,29 +558,13 @@ async function uploadToYandexDisk(filePath, yandexToken, remotePath) {
     }
 }
 
-async function viewRequestsFromExcel(filePath, chatId) {
-    if (!fs.existsSync(filePath)) {
-        await bot.sendMessage(chatId, "Таблица с заявками пока пуста.");
-        return;
-    }
 
+
+function sendReminders() {
     const workbook = XLSX.readFile(filePath);
     const worksheet = workbook.Sheets[workbook.SheetNames[0]];
     const data = XLSX.utils.sheet_to_json(worksheet);
 
-    if (data.length === 0) {
-        await bot.sendMessage(chatId, "Таблица с заявками пуста.");
-        return;
-    }
-
-    const formattedRequests = data.map((entry, index) =>
-        `${index + 1}. Имя ребенка: ${entry["Имя ребенка"]}, Дата: ${entry["Дата"]}, Телефон: ${entry["Телефон"]}`
-    ).join("\n");
-
-    await bot.sendMessage(chatId, `Текущие заявки:\n\n${formattedRequests}`);
-}
-
-function sendReminders() {
     const saturdayEvening = schedule.scheduleJob('0 18 ** 6', async () => {
         for (const user of registeredUsers) {
             const sessionDate = moment(user.date, 'DD.MM.YYYY');
@@ -565,4 +605,60 @@ async function sendAdminPanel(chatId) {
             ]
         }
     });
+}
+
+async function sendDateSelection(chatId, type) {
+    if (!fs.existsSync(filePath)) {
+        await bot.sendMessage(chatId, "Таблица с заявками пока пуста.");
+        return;
+    }
+
+    const workbook = XLSX.readFile(filePath);
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    const today = moment().startOf('day');
+    const filteredDates = [...new Set(data
+        .map(entry => entry["Дата"])
+        .filter(date => {
+            const entryDate = moment(date, 'DD.MM.YYYY');
+            return type === 'past' ? entryDate.isBefore(today) : entryDate.isSameOrAfter(today);
+        })
+    )];
+
+    if (filteredDates.length === 0) {
+        await bot.sendMessage(chatId, `Нет ${type === "past" ? "прошедших" : "будущих"} заявок.`);
+        return;
+    }
+
+    const buttons = filteredDates.map(date => [{ text: date, callback_data: `date_${date}` }]);
+    console.log(buttons);
+    await bot.sendMessage(chatId, `Выберите дату для просмотра ${type === "past" ? "прошедших" : "будущих"} заявок.`, {
+        reply_markup: { inline_keyboard: buttons }
+    });
+}
+
+async function viewRequestsByDate(chatId, date) {
+    console.log(date);
+    if (!fs.existsSync(filePath)) {
+        await bot.sendMessage(chatId, "Таблица с заявками пока пуста.");
+        return;
+    }
+
+    const workbook = XLSX.readFile(filePath);
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    const filteredRequests = data.filter(entry => entry["Дата"] === date);
+
+    if (filteredRequests.length === 0) {
+        await bot.sendMessage(chatId, `Заявки на ${date} отсутствуют.`);
+        return;
+    }
+
+    const formattedRequests = filteredRequests.map((entry, index) =>
+        `${index + 1}. Имя ребенка: ${entry["Имя ребенка"]}, Имя родителя: ${entry["Имя родителя"]}, Телефон: ${entry["Телефон"]}`
+    ).join("\n");
+
+    await bot.sendMessage(chatId, `Заявки на ${date}:\n\n${formattedRequests}`);
 }
