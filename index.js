@@ -59,18 +59,6 @@ bot.on('message', async (msg) => {
                 keyboard: [
                     [{text: "пр. Космонавтов, 52А (Уралмаш)"}],
                     [{text: "Назад"}]
-                    [{text: "пр. Космонавтов, 52А (Уралмаш)"}],
-                    [{text: "Назад"}]
-                ],
-                resize_keyboard: true
-            }
-        });
-    } else if (text === "Мои записи") {
-        await bot.sendMessage(chatId, "Выберите категорию записей:", {
-            reply_markup: {
-                keyboard: [
-                    [{ text: "Прошедшие записи" }, { text: "Активные записи" }],
-                    [{ text: "Назад" }]
                 ],
                 resize_keyboard: true
             }
@@ -280,10 +268,6 @@ async function handleStep(chatId, text, session) {
                     ]
                 },
                 remove_keyboard: true
-                reply_markup: {
-                    keyboard: [[{ text: "Назад" }]],
-                    resize_keyboard: true
-                }
             });
             break;
         case 7:
@@ -322,6 +306,7 @@ async function handleStep(chatId, text, session) {
                 }
             });
             break;
+
         case 8:
             if (validatePhoneNumber(text)) {
                 session.formData.phone = formatPhoneNumber(text);
@@ -422,10 +407,6 @@ async function sendPreviousStep(chatId, session) {
                         [{ text: "Завершить выбор", callback_data: "finish_selection" }]
                     ]
                 }
-                reply_markup: {
-                    keyboard: [[{ text: "Назад" }]],
-                    resize_keyboard: true
-                }
             });
             break;
         case 8:
@@ -457,8 +438,6 @@ bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const data = query.data;
     const session = userSessions[chatId];
-
-    // await bot.answerCallbackQuery(query.id);
 
     // await bot.answerCallbackQuery(query.id);
 
@@ -620,20 +599,6 @@ bot.on('callback_query', async (query) => {
             break;
         default:
             await bot.answerCallbackQuery(query.id, { text: "Некорректное действие." });
-    }
-});
-        });
-    } else if (data.startsWith("active_")) {
-        const selectedDate = data.replace("active_", "");
-        await viewActiveRecord(chatId, selectedDate);
-    } else if (data.startsWith("cancel_all_")) {
-        const date = data.replace("cancel_all_", "");
-        await cancelAllRecords(chatId, date);
-    } else if (data.startsWith("cancel_")) {
-        const recordId = parseInt(data.replace("cancel_", ""));
-        await cancelRecordById(chatId, recordId);
-    } else if (data === "back_to_active") {
-        await showActiveRecords(chatId);
     }
 });
 
