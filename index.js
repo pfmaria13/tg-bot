@@ -6,13 +6,12 @@ const yandexToken = process.env.YANDEX_TOKEN;
 const adminId = process.env.ADMIN_ID;
 const bot = new TelegramBot(token, {polling: true});
 const fs = require('fs');
-const formData = [];
+let formData = [];
 const filePath = 'formData.xlsx';
 const remotePath = '/Заявки.xlsx';
 const schedule = require('node-schedule');
 
 const userSessions = {};
-const registeredUsers = [];
 
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
@@ -54,11 +53,21 @@ bot.on('message', async (msg) => {
             "• работа с организациями \n" +
             "\n", { parse_mode: 'HTML' } );
     } else if (text === "Записаться в клуб") {
-        userSessions[chatId] = { step: 1, formData: {} };
+        userSessions[chatId] = {step: 1, formData: {}};
         await bot.sendMessage(chatId, "Клуб сочетает в себе психологические тренинговые упражнения, которые направлены как на отработку и закрепление практических навыков, так и на знакомство с собой. С другой стороны здесь можно почувствовать созидательную атмосферу, где ребята могут пообщаться друг с другом и поиграть в настолки.\n\nКакой адрес?", {
             reply_markup: {
                 keyboard: [
-                    [{ text: "пр. Космонавтов, 52А (Уралмаш)" }],
+                    [{text: "пр. Космонавтов, 52А (Уралмаш)"}],
+                    [{text: "Назад"}]
+                ],
+                resize_keyboard: true
+            }
+        });
+    } else if (text === "Мои записи") {
+        await bot.sendMessage(chatId, "Выберите категорию записей:", {
+            reply_markup: {
+                keyboard: [
+                    [{ text: "Прошедшие записи" }, { text: "Активные записи" }],
                     [{ text: "Назад" }]
                 ],
                 resize_keyboard: true
@@ -79,9 +88,13 @@ bot.on('message', async (msg) => {
             await handleStep(chatId, text, session);
         }
     } else if (text === '/admin' && chatId.toString() === adminId) {
-        sendAdminPanel(chatId);
+        await sendAdminPanel(chatId);
     } else if (text === '/admin') {
-        bot.sendMessage(chatId, 'У вас нет доступа к админ-панели.');
+        await bot.sendMessage(chatId, 'У вас нет доступа к админ-панели.');
+    } else if (text === "Прошедшие записи") {
+        await showPastRecords(chatId);
+    } else if (text === "Активные записи") {
+        await showActiveRecords(chatId);
     } else {
         await sendMainMenu(chatId);
     }
@@ -91,8 +104,8 @@ async function sendMainMenu(chatId, withMessage) {
     const options = {
         reply_markup: {
             keyboard: [
-                [{text: "Записаться в клуб"}, {text: "Вопросы"}],
-                [{text: "Cвязаться с нами"} ,{text: "Подробнее о сообществе"}],
+                [{text: "Записаться в клуб"}, {text: "Мои записи"}],
+                [{text: "Cвязаться с нами"}, {text: "Подробнее о сообществе"}, {text: "Вопросы"}],
                 [{text: "Записаться на консультацию к психологу"}]
             ],
             resize_keyboard: true
@@ -231,13 +244,59 @@ async function handleStep(chatId, text, session) {
                 return;
             }
 
-            session.formData.age = text;
             session.step++;
+            session.formData.requests = [];
+
+            await bot.sendMessage(chatId, "Возраст сохранен", {
+                reply_markup: {
+                    remove_keyboard: true
+                }
+            });
+
             await bot.sendMessage(chatId, "Какой запрос на клуб?", {
-                reply_markup: { remove_keyboard: true }
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "Низкая самооценка, неуверенность в себе", callback_data: "low_self_esteem" }],
+                        [{ text: "Неприятие себя", callback_data: "self_rejection" }],
+                        [{ text: "Трудности в общении, поиске друзей", callback_data: "communication_difficulties" }],
+                        [{ text: "Тревожность", callback_data: "anxiety" }],
+                        [{ text: "Поиск идентичности, профориентация", callback_data: "identity_search" }],
+                        [{ text: "Трудности в учебной деятельности", callback_data: "study_difficulties" }],
+                        [{ text: "Другое", callback_data: "other" }],
+                        [{ text: "Очистить выбор", callback_data: "clear_selection" }],
+                        [{ text: "Завершить выбор", callback_data: "finish_selection" }]
+                    ]
+                },
+                remove_keyboard: true
             });
             break;
         case 7:
+            // Если ожидается пользовательский ввод после выбора "Другое"
+            if (session.awaitingOtherInput) {
+                session.formData.requests.push(text); // Добавляем текст как новый запрос
+                session.awaitingOtherInput = false; // Сбрасываем флаг ожидания ввода
+                await bot.sendMessage(chatId, `Вы выбрали: ${session.formData.requests.join(", ")}`);
+                return;
+            }
+
+            // Если пользователь нажимает "Назад", возвращаемся к предыдущему шагу
+            if (text === "Назад") {
+                session.step = 6; // Возвращаемся на шаг выбора возраста
+                await bot.sendMessage(chatId, "Возраст ребенка?", {
+                    reply_markup: {
+                        keyboard: [
+                            [{ text: "12" }, { text: "13" }, { text: "14" }],
+                            [{ text: "15" }, { text: "16" }, { text: "17" }],
+                            [{ text: "Назад" }]
+                        ],
+                        resize_keyboard: true
+                    }
+                });
+                return;
+            }
+
+            // Никаких дополнительных сообщений, если пользователь выбрал "Другое"
+            break;
             session.formData.request = text;
             session.step++;
             await bot.sendMessage(chatId, "Оставьте Ваш номер телефона , чтобы мы могли с Вами связаться:", {
@@ -247,6 +306,7 @@ async function handleStep(chatId, text, session) {
                 }
             });
             break;
+
         case 8:
             if (validatePhoneNumber(text)) {
                 session.formData.phone = formatPhoneNumber(text);
@@ -334,7 +394,19 @@ async function sendPreviousStep(chatId, session) {
             break;
         case 7:
             await bot.sendMessage(chatId, "Какой запрос на клуб?", {
-                reply_markup: { remove_keyboard: true }
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "Низкая самооценка, неуверенность в себе", callback_data: "low_self_esteem" }],
+                        [{ text: "Неприятие себя", callback_data: "self_rejection" }],
+                        [{ text: "Трудности в общении, поиске друзей", callback_data: "communication_difficulties" }],
+                        [{ text: "Тревожность", callback_data: "anxiety" }],
+                        [{ text: "Поиск идентичности, профориентация", callback_data: "identity_search" }],
+                        [{ text: "Трудности в учебной деятельности", callback_data: "study_difficulties" }],
+                        [{ text: "Другое", callback_data: "other" }],
+                        [{ text: "Очистить выбор", callback_data: "clear_selection" }],
+                        [{ text: "Завершить выбор", callback_data: "finish_selection" }]
+                    ]
+                }
             });
             break;
         case 8:
@@ -365,6 +437,9 @@ function formatPhoneNumber(phone) {
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const data = query.data;
+    const session = userSessions[chatId];
+
+    // await bot.answerCallbackQuery(query.id);
 
     if (data === "club") {
         await bot.sendMessage(chatId, "Как проходит клуб?\n\nКлуб проходит в формате групповых встреч с профессиональным психологом. Каждое занятие включает обсуждение, практические задания и обратную связь.");
@@ -384,16 +459,13 @@ bot.on('callback_query', async (query) => {
     } else if (data === "agree" && userSessions[chatId]) {
         const session = userSessions[chatId];
         session.formData.consent = true;
+        session.formData.chatId = chatId;
 
         formData.push(session.formData);
-        registeredUsers.push({
-            chatId,
-            childName: session.formData.childName,
-            date: session.formData.date,
-            address: session.formData.address
-        })
 
-        saveToExcel(formData, filePath);
+        saveToExcel(formData, filePath, chatId);
+
+        formData = [];
 
         await uploadToYandexDisk(filePath, yandexToken, remotePath);
 
@@ -401,7 +473,39 @@ bot.on('callback_query', async (query) => {
         delete userSessions[chatId];
         await sendMainMenu(chatId);
     } else if (data === 'view_requests') {
-        await viewRequestsFromExcel(filePath, chatId);
+        await bot.sendMessage(chatId, "Выберите тип заявок:", {
+            reply_markup: {
+                inline_keyboard: [
+                    [{text: "Прошедшие заявки", callback_data: "past_requests"}],
+                    [{text: "Будущие заявки", callback_data: "future_requests"}]
+                ]
+            }
+        });
+    } else if (data === 'past_requests') {
+        await sendDateSelection(chatId, "past");
+    } else if (data === 'future_requests') {
+        await sendDateSelection(chatId, "future");
+    } else if (data.startsWith("date_")) {
+        const selectedDate = data.replace("date_", "");
+        await viewRequestsByDate(chatId, selectedDate);
+    } else if (data.startsWith("user_date_")) {
+        const selectedDate = data.replace("user_date_", "");
+        const workbook = XLSX.readFile(filePath);
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        const allData = XLSX.utils.sheet_to_json(worksheet);
+
+        const filteredRequests = allData.filter(entry => entry["chatId"] === chatId && entry["Дата"] === selectedDate);
+
+        if (filteredRequests.length === 0) {
+            await bot.sendMessage(chatId, `На ${selectedDate} записи отсутствуют.`);
+            return;
+        }
+
+        const formattedRequests = filteredRequests.map((entry, index) =>
+            `${index + 1}. Имя ребенка: ${entry["Имя ребенка"]}, Запрос: ${entry["Запрос"]}`
+        ).join("\n");
+
+        await bot.sendMessage(chatId, `Ваши записи на ${selectedDate}:\n\n${formattedRequests}`);
     } else if (data === 'set_digest') {
         await bot.sendMessage(chatId, 'Отправьте ссылки на дайджест (по одной ссылке на строку):');
         bot.once('message', async (msg) => {
@@ -412,21 +516,91 @@ bot.on('callback_query', async (query) => {
     } else if (data === 'send_post') {
         await bot.sendMessage(chatId, 'Введите текст поста:');
         bot.once('message', async (msg) => {
+            const workbook = XLSX.readFile(filePath);
+            const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+            const data = XLSX.utils.sheet_to_json(worksheet);
+
             const post = msg.text;
             for (const user of registeredUsers) {
                 await bot.sendMessage(user.chatId, post);
             }
             await bot.sendMessage(chatId, 'Пост отправлен.');
-        })
+        });
+    } else if (data.startsWith("active_")) {
+        const selectedDate = data.replace("active_", "");
+        await viewActiveRecord(chatId, selectedDate);
+    } else if (data.startsWith("cancel_all_")) {
+        const date = data.replace("cancel_all_", "");
+        await cancelAllRecords(chatId, date);
+    } else if (data.startsWith("cancel_")) {
+        const recordId = parseInt(data.replace("cancel_", ""));
+        await cancelRecordById(chatId, recordId);
+    } else if (data === "back_to_active") {
+        await showActiveRecords(chatId);
+    } else if (!session || session.step !== 7) {
+        await bot.answerCallbackQuery(query.id, { text: "Некорректное действие." });
+        return;
     }
 
-    // Удаляем отметку "typing..." у сообщения с инлайн-кнопками
-    await bot.answerCallbackQuery(query.id);
-});
+    if (!session.formData.requests) {
+        session.formData.requests = [];
+    }
 
-function saveToCRM(formData) {
-    console.log("Сохраненные данные:", formData)
-}
+    let req;
+    const dict = {"low_self_esteem": "Низкая самооценка, неуверенность в себе", "self_rejection": "Неприятие себя", "communication_difficulties": "Трудности в общении, поиске друзей", "anxiety": "Тревожность", "identity_search": "Поиск идентичности, профориентация", "study_difficulties": "Трудности в учебной деятельности"}
+    switch (data) {
+        case "low_self_esteem":
+        case "self_rejection":
+        case "communication_difficulties":
+        case "anxiety":
+        case "identity_search":
+        case "study_difficulties":
+            for (const [key, value] of Object.entries(dict)) {
+                if (key === data) {
+                    if (!session.formData.requests.includes(value)) {
+                        session.formData.requests.push(value);
+                        await bot.answerCallbackQuery(query.id, { text: "Вы выбрали: " + session.formData.requests.join(", ") });
+                    } else {
+                        await bot.answerCallbackQuery(query.id, { text: "Этот пункт уже выбран." });
+                    }
+                }
+            }
+            break;
+        case "other":
+            await bot.answerCallbackQuery(query.id);
+            await bot.sendMessage(chatId, "Введите свой вариант:");
+            bot.once('message', async (msg) => {
+                session.formData.requests.push(msg.text);
+                await bot.sendMessage(chatId, `Вы выбрали: ${session.formData.requests.join(", ")}`);
+            });
+            break;
+        case "finish_selection":
+            if (session.formData.requests.length === 0) {
+                await bot.answerCallbackQuery(query.id, { text: "Выберите хотя бы один запрос." });
+            } else {
+                // Отправляем сообщение с итоговым выбором
+                const selectedRequests = session.formData.requests.join(", ");
+                await bot.sendMessage(chatId, `Вы выбрали: ${selectedRequests}`);
+
+                // Переход на следующий шаг
+                session.step++;
+                await bot.answerCallbackQuery(query.id, { text: "Выбор завершен." });
+                await bot.sendMessage(chatId, "Оставьте Ваш номер телефона, чтобы мы могли с Вами связаться:", {
+                    reply_markup: {
+                        keyboard: [[{ text: "Назад" }]],
+                        resize_keyboard: true
+                    }
+                });
+            }
+            break;
+        case "clear_selection":
+            session.formData.requests = []; // Очищаем выбор запросов
+            await bot.answerCallbackQuery(query.id, { text: "Выбор очищен" }); // Сообщение-всплывашка
+            break;
+        default:
+            await bot.answerCallbackQuery(query.id, { text: "Некорректное действие." });
+    }
+});
 
 function generateUpcomingSundays(count) {
     const sundays = [];
@@ -446,7 +620,7 @@ function generateUpcomingSundays(count) {
 
 const XLSX = require('xlsx');
 
-function saveToExcel(formData, filePath) {
+function saveToExcel(formData, filePath, chatId) {
     let existingData = [];
 
     if (fs.existsSync(filePath)) {
@@ -457,13 +631,14 @@ function saveToExcel(formData, filePath) {
 
     const updatedData = [...existingData, ...formData.map((entry, index) => ({
         ID: existingData.length + index + 1,
+        chatId: chatId,
         Адрес: entry.address,
         Дата: entry.date,
         "Имя родителя": entry.parentName,
         "Имя ребенка": entry.childName,
         Пол: entry.gender,
         Возраст: entry.age,
-        Запрос: entry.request,
+        Запрос: entry.request.join(", "),
         Телефон: entry.phone
     }))];
 
@@ -473,7 +648,7 @@ function saveToExcel(formData, filePath) {
 
     XLSX.writeFile(workbook, filePath);
 
-    console.log("Данные сохранены в Excel!");
+    console.log("Данные сохранены в Excel!", updatedData);
 }
 
 const axios = require('axios');
@@ -502,29 +677,11 @@ async function uploadToYandexDisk(filePath, yandexToken, remotePath) {
     }
 }
 
-async function viewRequestsFromExcel(filePath, chatId) {
-    if (!fs.existsSync(filePath)) {
-        await bot.sendMessage(chatId, "Таблица с заявками пока пуста.");
-        return;
-    }
-
+function sendReminders() {
     const workbook = XLSX.readFile(filePath);
     const worksheet = workbook.Sheets[workbook.SheetNames[0]];
     const data = XLSX.utils.sheet_to_json(worksheet);
 
-    if (data.length === 0) {
-        await bot.sendMessage(chatId, "Таблица с заявками пуста.");
-        return;
-    }
-
-    const formattedRequests = data.map((entry, index) =>
-        `${index + 1}. Имя ребенка: ${entry["Имя ребенка"]}, Дата: ${entry["Дата"]}, Телефон: ${entry["Телефон"]}`
-    ).join("\n");
-
-    await bot.sendMessage(chatId, `Текущие заявки:\n\n${formattedRequests}`);
-}
-
-function sendReminders() {
     const saturdayEvening = schedule.scheduleJob('0 18 ** 6', async () => {
         for (const user of registeredUsers) {
             const sessionDate = moment(user.date, 'DD.MM.YYYY');
@@ -565,4 +722,219 @@ async function sendAdminPanel(chatId) {
             ]
         }
     });
+}
+
+async function sendDateSelection(chatId, type) {
+    if (!fs.existsSync(filePath)) {
+        await bot.sendMessage(chatId, "Таблица с заявками пока пуста.");
+        return;
+    }
+
+    const workbook = XLSX.readFile(filePath);
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    const today = moment().startOf('day');
+    const filteredDates = [...new Set(data
+        .filter(entry => entry["Отменена"] !== true)
+        .map(entry => entry["Дата"])
+        .filter(date => {
+            const entryDate = moment(date, 'DD.MM.YYYY');
+            return type === 'past' ? entryDate.isBefore(today) : entryDate.isSameOrAfter(today);
+        })
+    )];
+
+    filteredDates.sort((a, b) => moment(a, 'DD.MM.YYYY') - moment(b, 'DD.MM.YYYY'));
+
+    if (filteredDates.length === 0) {
+        await bot.sendMessage(chatId, `Нет ${type === "past" ? "прошедших" : "будущих"} заявок.`);
+        return;
+    }
+
+    const buttons = filteredDates.map(date => [{ text: date, callback_data: `date_${date}` }]);
+
+    await bot.sendMessage(chatId, `Выберите дату для просмотра ${type === "past" ? "прошедших" : "будущих"} заявок.`, {
+        reply_markup: { inline_keyboard: buttons }
+    });
+}
+
+function sortRequestsByDate(requests) {
+    return requests.sort((a, b) => {
+        const dateA = moment(a["Дата"], 'DD.MM.YYYY');
+        const dateB = moment(b["Дата"], 'DD.MM.YYYY');
+        return dateA - dateB;
+    });
+}
+
+async function viewRequestsByDate(chatId, date) {
+    if (!fs.existsSync(filePath)) {
+        await bot.sendMessage(chatId, "Таблица с заявками пока пуста.");
+        return;
+    }
+
+    const workbook = XLSX.readFile(filePath);
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    const filteredRequests = data.filter(entry => entry["Дата"] === date && entry["Отменена"] !== true);
+
+    if (filteredRequests.length === 0) {
+        await bot.sendMessage(chatId, `Заявки на ${date} отсутствуют.`);
+        return;
+    }
+
+    const formattedRequests = filteredRequests.map((entry, index) =>
+        `${index + 1}. Имя ребенка: ${entry["Имя ребенка"]}, Имя родителя: ${entry["Имя родителя"]}, Телефон: ${entry["Телефон"]}`
+    ).join("\n");
+
+    await bot.sendMessage(chatId, `Заявки на ${date}:\n\n${formattedRequests}`);
+}
+
+async function showPastRecords(chatId) {
+    if (!fs.existsSync(filePath)) {
+        await bot.sendMessage(chatId, "Записи отсутствуют.");
+        return;
+    }
+
+    const workbook = XLSX.readFile(filePath);
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    const today = moment().startOf('day');
+    const pastRecords = data.filter(entry => {
+        const entryDate = moment(entry["Дата"], 'DD.MM.YYYY');
+        return entryDate.isBefore(today) && entry["Отменена"] !== true && entry["chatId"] === chatId;
+    });
+
+    pastRecords.sort((a, b) => moment(a["Дата"], 'DD.MM.YYYY') - moment(b["Дата"], 'DD.MM.YYYY'));
+
+    if (pastRecords.length === 0) {
+        await bot.sendMessage(chatId, "Прошедших записей нет.");
+        return;
+    }
+
+    const formattedRecords = pastRecords.map((entry, index) =>
+        `${index + 1}. ${entry["Дата"]} ${entry["Время"]} - Имя ребенка: ${entry["Имя ребенка"]}, Запрос: ${entry["Запрос"]}`
+    ).join("\n");
+
+    await bot.sendMessage(chatId, `Ваши прошедшие записи:\n\n${formattedRecords}`);
+}
+
+async function showActiveRecords(chatId) {
+    if (!fs.existsSync(filePath)) {
+        await bot.sendMessage(chatId, "Записи отсутствуют.");
+        return;
+    }
+
+    const workbook = XLSX.readFile(filePath);
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    const today = moment().startOf('day');
+    const activeRecords = data.filter(entry => {
+        const entryDate = moment(entry["Дата"], 'DD.MM.YYYY');
+        return entryDate.isSameOrAfter(today) && entry["Отменена"] !== true && entry["chatId"] === chatId;
+    });
+
+    activeRecords.sort((a, b) => moment(a["Дата"], 'DD.MM.YYYY') - moment(b["Дата"], 'DD.MM.YYYY'));
+
+    if (activeRecords.length === 0) {
+        await bot.sendMessage(chatId, "Активных записей нет.");
+        return;
+    }
+
+    const uniqueDates = [...new Set(activeRecords.map(entry => entry["Дата"]))];
+
+    const buttons = uniqueDates.map(date =>
+        [{ text: `${date}`, callback_data: `active_${date}` }]
+    );
+
+    await bot.sendMessage(chatId, "Выберите дату для просмотра записи:", {
+        reply_markup: { inline_keyboard: buttons }
+    });
+}
+
+async function viewActiveRecord(chatId, date) {
+    const workbook = XLSX.readFile(filePath);
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    // Фильтрация всех активных записей на выбранную дату для пользователя
+    const records = data.filter(entry =>
+        entry["Дата"] === date && entry["chatId"] === chatId && entry["Отменена"] !== true
+    );
+
+    if (records.length === 0) {
+        await bot.sendMessage(chatId, "Активные записи на выбранную дату отсутствуют.");
+        return;
+    }
+
+    // Формирование списка записей
+    const messageText = records.map((entry, index) =>
+        `${index + 1}. Имя ребенка: ${entry["Имя ребенка"]}, Запрос: ${entry["Запрос"]}`
+    ).join("\n");
+
+    const buttons = [];
+
+    // Если больше одной записи — добавить кнопку "Отменить все записи"
+    if (records.length > 1) {
+        buttons.push([{ text: "Отменить все записи", callback_data: `cancel_all_${date}` }]);
+    }
+
+    // Добавление индивидуальных кнопок отмены для каждой записи
+    records.forEach((entry, index) => {
+        const buttonText = records.length === 1
+            ? "Отменить запись"
+            : `Отменить запись ${index + 1}`;
+        buttons.push([{ text: buttonText, callback_data: `cancel_${entry["ID"]}` }]);
+    });
+
+    buttons.push([{ text: "Назад", callback_data: "back_to_active" }]);
+
+    await bot.sendMessage(chatId, `Ваши записи на ${date}:\n\n${messageText}`, {
+        reply_markup: { inline_keyboard: buttons }
+    });
+}
+
+
+async function cancelRecordById(chatId, recordId) {
+    const workbook = XLSX.readFile(filePath);
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    // Пометка записи как отмененной
+    const updatedData = data.map(entry => {
+        if (entry["ID"] === recordId) {
+            entry["Отменена"] = true;
+        }
+        return entry;
+    });
+
+    const newWorksheet = XLSX.utils.json_to_sheet(updatedData);
+    workbook.Sheets["Заявки"] = newWorksheet;
+    XLSX.writeFile(workbook, filePath);
+
+    await bot.sendMessage(chatId, "Запись успешно отменена.");
+    await showActiveRecords(chatId);
+}
+
+async function cancelAllRecords(chatId, date) {
+    const workbook = XLSX.readFile(filePath);
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    // Пометка всех записей на выбранную дату как отмененных
+    const updatedData = data.map(entry => {
+        if (entry["Дата"] === date && entry["chatId"] === chatId) {
+            entry["Отменена"] = true;
+        }
+        return entry;
+    });
+
+    const newWorksheet = XLSX.utils.json_to_sheet(updatedData);
+    workbook.Sheets["Заявки"] = newWorksheet;
+    XLSX.writeFile(workbook, filePath);
+
+    await bot.sendMessage(chatId, "Все записи на выбранную дату успешно отменены.");
+    await showActiveRecords(chatId);
 }
