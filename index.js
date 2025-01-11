@@ -244,6 +244,7 @@ async function handleStep(chatId, text, session) {
                 return;
             }
 
+            session.formData.age = text;
             session.step++;
             session.formData.requests = [];
 
@@ -294,19 +295,7 @@ async function handleStep(chatId, text, session) {
                 });
                 return;
             }
-
-            // Никаких дополнительных сообщений, если пользователь выбрал "Другое"
             break;
-            session.formData.request = text;
-            session.step++;
-            await bot.sendMessage(chatId, "Оставьте Ваш номер телефона , чтобы мы могли с Вами связаться:", {
-                reply_markup: {
-                    keyboard: [[{ text: "Назад" }]],
-                    resize_keyboard: true
-                }
-            });
-            break;
-
         case 8:
             if (validatePhoneNumber(text)) {
                 session.formData.phone = formatPhoneNumber(text);
@@ -538,15 +527,10 @@ bot.on('callback_query', async (query) => {
     } else if (data === "back_to_active") {
         await showActiveRecords(chatId);
     } else if (!session || session.step !== 7) {
-        await bot.answerCallbackQuery(query.id, { text: "Некорректное действие." });
+        console.log("Некорректное действие");
         return;
     }
 
-    if (!session.formData.requests) {
-        session.formData.requests = [];
-    }
-
-    let req;
     const dict = {"low_self_esteem": "Низкая самооценка, неуверенность в себе", "self_rejection": "Неприятие себя", "communication_difficulties": "Трудности в общении, поиске друзей", "anxiety": "Тревожность", "identity_search": "Поиск идентичности, профориентация", "study_difficulties": "Трудности в учебной деятельности"}
     switch (data) {
         case "low_self_esteem":
@@ -598,7 +582,7 @@ bot.on('callback_query', async (query) => {
             await bot.answerCallbackQuery(query.id, { text: "Выбор очищен" }); // Сообщение-всплывашка
             break;
         default:
-            await bot.answerCallbackQuery(query.id, { text: "Некорректное действие." });
+            await bot.answerCallbackQuery(query.id);
     }
 });
 
@@ -638,7 +622,7 @@ function saveToExcel(formData, filePath, chatId) {
         "Имя ребенка": entry.childName,
         Пол: entry.gender,
         Возраст: entry.age,
-        Запрос: entry.request.join(", "),
+        Запрос: entry.requests.join(', '),
         Телефон: entry.phone
     }))];
 
