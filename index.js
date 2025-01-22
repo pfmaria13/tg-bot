@@ -1,15 +1,25 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
-const moment = require('moment')
+const moment = require('moment');
+const momentTz = require('moment-timezone');
 const token = process.env.TOKEN;
 const yandexToken = process.env.YANDEX_TOKEN;
-const adminId = process.env.ADMIN_ID;
+const superAdminId = process.env.SUPERADMIN_ID;
+const adminPassword = process.env.ADMIN_PASSWORD;
+const adminsFilePath = 'admins.json';
+const questionsFilePath = 'questions.json';
 const bot = new TelegramBot(token, {polling: true});
 const fs = require('fs');
 let formData = [];
 const filePath = 'formData.xlsx';
 const remotePath = '/Заявки.xlsx';
 const schedule = require('node-schedule');
+const adminSessions = {};
+const sqlite3 = require('sqlite3').verbose();
+const db = new sqlite3.Database('./users.db');
+const blockedDates = [];
+const blockedDatesFile = 'blockedDates.json';
+const saveQueue = [];
 
 const userSessions = {};
 
@@ -18,6 +28,7 @@ bot.on('message', async (msg) => {
     const text = msg.text;
 
     if (text === '/start') {
+        addUserToDatabase(chatId);
         try {
             await sendMainMenu(chatId, true);
         } catch (err) {
@@ -28,15 +39,11 @@ bot.on('message', async (msg) => {
             }
         }
     } else if (text === "Вопросы") {
+        const questions = loadQuestions();
+        const buttons = questions.map((q, index) => [{ text: q.question, callback_data: `show_answer_${index}` }]);
+
         await bot.sendMessage(chatId, "Выберите вопрос, чтобы узнать подробнее:", {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: "Как проходит клуб?", callback_data: "club" }],
-                    [{ text: "Какова стоимость занятий?", callback_data: "cost" }],
-                    [{ text: "Где и когда проходят встречи?", callback_data: "where_and_when" }],
-                    [{ text: "Как записаться?", callback_data: "sign_up"}]
-                ]
-            }
+            reply_markup: { inline_keyboard: buttons }
         });
     }  else if (text === 'Cвязаться с нами') {
         await bot.sendMessage(chatId,  "Связаться и узнать ответы на интересующие вопросы можно через Полину\n" +
@@ -67,12 +74,14 @@ bot.on('message', async (msg) => {
         await bot.sendMessage(chatId, "Выберите категорию записей:", {
             reply_markup: {
                 keyboard: [
-                    [{ text: "Прошедшие записи" }, { text: "Активные записи" }],
-                    [{ text: "Назад" }]
+                    [{text: "Прошедшие записи"}, {text: "Активные записи"}],
+                    [{text: "Назад"}]
                 ],
                 resize_keyboard: true
             }
         });
+    } else if (text === "Записаться на консультацию к психологу") {
+        await bot.sendMessage(chatId, "Полина Кузьминых\nтг: @polinakuzminyh\nтелефон: +79122571526\n\nИрина Васеха\nтг: @irinalino");
     } else if (userSessions[chatId]) {
         const session = userSessions[chatId];
 
@@ -87,15 +96,23 @@ bot.on('message', async (msg) => {
         } else {
             await handleStep(chatId, text, session);
         }
-    } else if (text === '/admin' && chatId.toString() === adminId) {
-        await sendAdminPanel(chatId);
     } else if (text === '/admin') {
-        await bot.sendMessage(chatId, 'У вас нет доступа к админ-панели.');
+        let admins = [];
+
+        if (fs.existsSync(adminsFilePath)) {
+            admins = JSON.parse(fs.readFileSync(adminsFilePath, 'utf8'));
+        }
+
+        if (admins.includes(chatId.toString())) {
+            await sendAdminPanel(chatId);
+        } else {
+            await bot.sendMessage(chatId, 'У вас нет доступа к админ-панели.');
+        }
     } else if (text === "Прошедшие записи") {
         await showPastRecords(chatId);
     } else if (text === "Активные записи") {
         await showActiveRecords(chatId);
-    } else {
+    } else if (text === "Назад") {
         await sendMainMenu(chatId);
     }
 });
@@ -272,17 +289,15 @@ async function handleStep(chatId, text, session) {
             });
             break;
         case 7:
-            // Если ожидается пользовательский ввод после выбора "Другое"
             if (session.awaitingOtherInput) {
-                session.formData.requests.push(text); // Добавляем текст как новый запрос
-                session.awaitingOtherInput = false; // Сбрасываем флаг ожидания ввода
+                session.formData.requests.push(text);
+                session.awaitingOtherInput = false;
                 await bot.sendMessage(chatId, `Вы выбрали: ${session.formData.requests.join(", ")}`);
                 return;
             }
 
-            // Если пользователь нажимает "Назад", возвращаемся к предыдущему шагу
             if (text === "Назад") {
-                session.step = 6; // Возвращаемся на шаг выбора возраста
+                session.step = 6;
                 await bot.sendMessage(chatId, "Возраст ребенка?", {
                     reply_markup: {
                         keyboard: [
@@ -300,7 +315,9 @@ async function handleStep(chatId, text, session) {
             if (validatePhoneNumber(text)) {
                 session.formData.phone = formatPhoneNumber(text);
                 session.step++;
-                await bot.sendMessage(chatId, "Согласие на обработку персональных данных. Подтвердите, пожалуйста:", {
+                const pdfPath = './policy.pdf';
+                await bot.sendDocument(chatId, pdfPath, {
+                    caption: "Согласие на обработку персональных данных. Ознакомьтесь с политикой, а затем подтвердите, нажав ✅:",
                     reply_markup: {
                         inline_keyboard: [
                             [{ text: "✅", callback_data: "agree" }]
@@ -308,7 +325,7 @@ async function handleStep(chatId, text, session) {
                     }
                 });
             } else {
-                await bot.sendMessage(chatId, "Номер телефона введен неправильно. Введите номер телефона повторно. ")
+                await bot.sendMessage(chatId, "Номер телефона введен неправильно. Введите номер телефона повторно.");
             }
             break;
         default:
@@ -399,7 +416,7 @@ async function sendPreviousStep(chatId, session) {
             });
             break;
         case 8:
-            await bot.sendMessage(chatId, "Оставьте Ваш номер телефона , чтобы мы могли с Вами связаться:", {
+            await bot.sendMessage(chatId, "Оставьте Ваш номер телефона, чтобы мы могли с Вами связаться:", {
                 reply_markup: {
                     keyboard: [[{ text: "Назад" }]],
                     resize_keyboard: true
@@ -422,20 +439,17 @@ function formatPhoneNumber(phone) {
     return phone;
 }
 
-// Обработка нажатий на инлайн-кнопки
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const data = query.data;
     const session = userSessions[chatId];
-
-    // await bot.answerCallbackQuery(query.id);
 
     if (data === "club") {
         await bot.sendMessage(chatId, "Как проходит клуб?\n\nКлуб проходит в формате групповых встреч с профессиональным психологом. Каждое занятие включает обсуждение, практические задания и обратную связь.");
     } else if (data === "cost") {
         await bot.sendMessage(chatId, "Какова стоимость занятий?\n\nСтоимость разового посещения – 1800 руб, абонемент на 4 занятия – 6000 руб.");
     } else if (data === "where_and_when") {
-        await bot.sendMessage(chatId, "Где и когда проходят встречи?\n\nМероприятия проводятся по адресу [вставить адрес]. Расписание доступно [ссылка на расписание].");
+        await bot.sendMessage(chatId, "Где и когда проходят встречи?\n\nМероприятия проводятся по адресу пр. Космонавтов, 52А (Уралмаш). Расписание доступно [ссылка на расписание].");
     } else if (data === "sign_up") {
         await bot.sendMessage(chatId, "Как записаться?\n\nДля записи заполните форму ниже.", {
             reply_markup: {
@@ -452,7 +466,7 @@ bot.on('callback_query', async (query) => {
 
         formData.push(session.formData);
 
-        saveToExcel(formData, filePath, chatId);
+        enqueueSaveOperation(formData, filePath, chatId);
 
         formData = [];
 
@@ -465,8 +479,9 @@ bot.on('callback_query', async (query) => {
         await bot.sendMessage(chatId, "Выберите тип заявок:", {
             reply_markup: {
                 inline_keyboard: [
-                    [{text: "Прошедшие заявки", callback_data: "past_requests"}],
-                    [{text: "Будущие заявки", callback_data: "future_requests"}]
+                    [{ text: "Прошедшие заявки", callback_data: "past_requests"}],
+                    [{ text: "Будущие заявки", callback_data: "future_requests"}],
+                    [{ text: "Закрыть ❎", callback_data: 'delete_action' }]
                 ]
             }
         });
@@ -495,25 +510,57 @@ bot.on('callback_query', async (query) => {
         ).join("\n");
 
         await bot.sendMessage(chatId, `Ваши записи на ${selectedDate}:\n\n${formattedRequests}`);
-    } else if (data === 'set_digest') {
-        await bot.sendMessage(chatId, 'Отправьте ссылки на дайджест (по одной ссылке на строку):');
+    } else if (data === 'digest_settings') {
+        await bot.sendMessage(chatId, "Настройки дайджеста. Выберите действие:", {
+            reply_markup: {
+                inline_keyboard: [
+                    [{text: 'Изменить день и время отправки', callback_data: 'change_digest_time'}],
+                    [{text: 'Обновить содержание дайджеста', callback_data: 'update_digest_content'}],
+                    [{text: 'Просмотреть текущий дайджест', callback_data: 'view_digest'}],
+                    [{text: 'Закрыть ❎', callback_data: 'delete_action'}]
+                ]
+            }
+        });
+    } else if (data === 'update_digest_content') {
+        adminSessions[chatId] = { action: 'update_digest_content' };
+        await bot.sendMessage(chatId, "Введите новое содержание дайджеста:", {
+            reply_markup: {
+                inline_keyboard: [[{ text: "Закрыть ❎", callback_data: 'delete_action' }]]
+            }
+        });
+
         bot.once('message', async (msg) => {
-            const links = msg.text.split('\n');
-            setDigestLinks(links);
-            await bot.sendMessage(chatId, 'Дайджест обновлен.');
+            if (adminSessions[chatId]?.action === 'update_digest_content') {
+                digestContent = msg.text;
+                await bot.sendMessage(chatId, "Содержание дайджеста обновлено.");
+                delete adminSessions[chatId];
+            }
         });
     } else if (data === 'send_post') {
-        await bot.sendMessage(chatId, 'Введите текст поста:');
-        bot.once('message', async (msg) => {
-            const workbook = XLSX.readFile(filePath);
-            const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-            const data = XLSX.utils.sheet_to_json(worksheet);
-
-            const post = msg.text;
-            for (const user of registeredUsers) {
-                await bot.sendMessage(user.chatId, post);
+        adminSessions[chatId] = { action: 'send_post' };
+        await bot.sendMessage(chatId, 'Введите текст поста:', {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "Закрыть ❎", callback_data: 'delete_action' }]
+                ]
             }
-            await bot.sendMessage(chatId, 'Пост отправлен.');
+        });
+        bot.once('message', async (msg) => {
+            if (adminSessions[chatId]?.action === 'send_post') {
+                db.all("SELECT chatId FROM users", [], async (err, rows) => {
+                    if (err) {
+                        console.error("Ошибка чтения пользователей из базы данных:", err.message);
+                        return;
+                    }
+                    for (const row of rows) {
+                        try {
+                            await bot.sendMessage(row.chatId, msg.text);
+                        } catch (err) {
+                            console.error(`Ошибка отправки сообщения пользователю ${row.chatId}:`, err.message);
+                        }
+                    }
+                });
+            }
         });
     } else if (data.startsWith("active_")) {
         const selectedDate = data.replace("active_", "");
@@ -526,8 +573,106 @@ bot.on('callback_query', async (query) => {
         await cancelRecordById(chatId, recordId);
     } else if (data === "back_to_active") {
         await showActiveRecords(chatId);
+    } else if (data === "edit_questions") {
+        await showQuestionsEditor(chatId);
+    } else if (data === "add_question") {
+        adminSessions[chatId] = {action: 'add_question'};
+        await bot.sendMessage(chatId, "Введите новый вопрос и ответ в формате: Вопрос? Ответ.");
+        await getMessage(chatId);
+    } else if (data.startsWith("edit_question_")) {
+        const index = parseInt(data.split("_")[2]);
+        adminSessions[chatId] = {action: 'edit_question', index};
+        const question = loadQuestions()[index];
+        await bot.sendMessage(chatId, `Редактирование вопроса:\n\n${question.question}\n\nВведите новый текст в формате: Вопрос? Ответ.`);
+        await getMessage(chatId);
+    } else if (data.startsWith("delete_question_")) {
+        const index = parseInt(data.split("_")[2]);
+        const questions = loadQuestions();
+        questions.splice(index, 1);
+        saveQuestions(questions);
+        await bot.sendMessage(chatId, "Вопрос удален.");
+        await showQuestionsEditor(chatId);
+    } else if (data.startsWith("show_answer_")) {
+        const index = parseInt(data.split("_")[2]);
+        const question = loadQuestions()[index];
+        await bot.sendMessage(chatId, `${question.question}\n\n${question.answer}`);
+    } else if (data === "manage_admins") {
+        await sendSuperAdminPanel(chatId);
+    } else if (data === "view_admins") {
+        await showAdmins(chatId);
+    } else if (data === "add_admin") {
+        await addAdmin(chatId);
+    } else if (data === "remove_admin") {
+        await removeAdmin(chatId);
+    } else if (data === 'change_digest_time') {
+        adminSessions[chatId] = { action: 'change_digest_time' };
+        await bot.sendMessage(chatId, "Введите новый день и время отправки дайджеста в формате: `DD HH:MM` (например, `5 14:30`):", {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [[{ text: "Закрыть ❎", callback_data: 'delete_action' }]]
+            }
+        });
+
+        bot.once('message', (msg) => {
+            if (adminSessions[chatId]?.action === 'change_digest_time') {
+                const input = msg.text.trim();
+                const regex = /^(\d{1,2})\s+(\d{2}):(\d{2})$/;
+                const match = regex.exec(input);
+
+                delete adminSessions[chatId];
+
+                if (match) {
+                    const day = parseInt(match[1], 10);
+                    const hour = parseInt(match[2], 10);
+                    const minute = parseInt(match[3], 10);
+
+                    if (day >= 1 && day <= 31 && hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+                        updateDigestTime(day, `${hour}:${minute}`);
+                        bot.sendMessage(chatId, `День и время отправки дайджеста обновлены: ${day}-е число, ${hour}:${minute}.`);
+                        restartDigestJob();
+                        delete adminSessions[chatId];
+                    } else {
+                        bot.sendMessage(chatId, "Неверный формат времени. Убедитесь, что день и время находятся в допустимых пределах.");
+                    }
+                } else {
+                    bot.sendMessage(chatId, "Неверный формат. Введите данные в формате: `DD HH:MM`.");
+                }
+            }
+        });
+    } else if (data === 'view_digest') {
+        await getSetting('digest_time', async (digestTime) => {
+            const timeInfo = digestTime ? `Дайджест отправляется ${digestTime}` : "Дайджест не настроен.";
+            await bot.sendMessage(chatId, `${timeInfo}\n\nСодержимое дайджеста:\n${digestContent}`)
+        });
+    } else if (data === "delete_action") {
+        delete adminSessions[chatId];
+        try {
+            await bot.deleteMessage(chatId, query.message.message_id);
+            await bot.sendMessage(chatId, "Действие отменено.");
+            await sendAdminPanel(chatId);
+        } catch (error) {
+            console.error('Ошибка при удалении сообщения:', error);
+        }
+    } else if (data === 'delete_date') {
+        const availableDates = generateUpcomingSundays(5);
+
+        if (availableDates.length === 0) {
+            await bot.sendMessage(chatId, "Нет доступных дат для удаления.");
+            return;
+        }
+
+        const buttons = availableDates.map(date => [{ text: date, callback_data: `remove_date_${date}` }]);
+        buttons.push(
+            [{ text: 'Закрыть ❎', callback_data: 'delete_action' }]
+        )
+        await bot.sendMessage(chatId, "Выберите дату для удаления:", {
+            reply_markup: { inline_keyboard: buttons }
+        });
+    } else if (data.startsWith('remove_date_')) {
+        const dateToRemove = data.replace('remove_date_', '');
+        await deleteDateAndNotify(dateToRemove, chatId);
     } else if (!session || session.step !== 7) {
-        console.log("Некорректное действие");
+        await bot.answerCallbackQuery(query.id);
         return;
     }
 
@@ -562,11 +707,9 @@ bot.on('callback_query', async (query) => {
             if (session.formData.requests.length === 0) {
                 await bot.answerCallbackQuery(query.id, { text: "Выберите хотя бы один запрос." });
             } else {
-                // Отправляем сообщение с итоговым выбором
                 const selectedRequests = session.formData.requests.join(", ");
                 await bot.sendMessage(chatId, `Вы выбрали: ${selectedRequests}`);
 
-                // Переход на следующий шаг
                 session.step++;
                 await bot.answerCallbackQuery(query.id, { text: "Выбор завершен." });
                 await bot.sendMessage(chatId, "Оставьте Ваш номер телефона, чтобы мы могли с Вами связаться:", {
@@ -578,8 +721,8 @@ bot.on('callback_query', async (query) => {
             }
             break;
         case "clear_selection":
-            session.formData.requests = []; // Очищаем выбор запросов
-            await bot.answerCallbackQuery(query.id, { text: "Выбор очищен" }); // Сообщение-всплывашка
+            session.formData.requests = [];
+            await bot.answerCallbackQuery(query.id, { text: "Выбор очищен" });
             break;
         default:
             await bot.answerCallbackQuery(query.id);
@@ -588,7 +731,7 @@ bot.on('callback_query', async (query) => {
 
 function generateUpcomingSundays(count) {
     const sundays = [];
-    let currentDate = moment().startOf('day');
+    let currentDate = moment().startOf('minute');
 
     if (currentDate.day() !== 0) {
         currentDate = currentDate.add(7 - currentDate.day(), 'days');
@@ -596,7 +739,12 @@ function generateUpcomingSundays(count) {
 
     for (let i = 0; i < count; i++) {
         const sunday = currentDate.clone().add(i * 7, 'days');
-        sundays.push(sunday.format('DD.MM.YYYY, вс, 12:00-15:00'));
+        const sundayStart = sunday.clone().set({ hour: 12, minute: 0 });
+        const sundayEnd = sunday.clone().set({ hour: 15, minute: 0 });
+
+        if (sundayEnd.isAfter(moment()) && !blockedDates.includes(sundayStart.format('DD.MM.YYYY, вс, 12:00-15:00'))) {
+            sundays.push(sundayStart.format('DD.MM.YYYY, вс, 12:00-15:00'));
+        }
     }
 
     return sundays;
@@ -631,8 +779,6 @@ function saveToExcel(formData, filePath, chatId) {
     XLSX.utils.book_append_sheet(workbook, worksheet, "Заявки");
 
     XLSX.writeFile(workbook, filePath);
-
-    console.log("Данные сохранены в Excel!", updatedData);
 }
 
 const axios = require('axios');
@@ -662,49 +808,75 @@ async function uploadToYandexDisk(filePath, yandexToken, remotePath) {
 }
 
 function sendReminders() {
-    const workbook = XLSX.readFile(filePath);
-    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-    const data = XLSX.utils.sheet_to_json(worksheet);
+    if (!fs.existsSync(filePath)) {
+        console.log("Файл с данными не найден.");
+        return;
+    }
 
-    const saturdayEvening = schedule.scheduleJob('0 18 ** 6', async () => {
-        for (const user of registeredUsers) {
-            const sessionDate = moment(user.date, 'DD.MM.YYYY');
-            if (sessionDate.isSame(moment().add(1, 'day'), 'day')) {
-                await bot.sendMessage(user.chatId, `Напоминалка! ${user.childName} записан завтра в клуб. Ждем вас на встрече! ${user.date} по адресу: ${user.address}`);
+    schedule.scheduleJob('*/30 * * * *', async () => {
+        const workbook = XLSX.readFile(filePath);
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(worksheet);
+
+        const now = moment();
+
+        for (const entry of data) {
+            if (!entry["Дата"] || entry["Отменена"] === true) continue;
+
+            const rawDate = entry["Дата"].split(',')[0].trim();
+            const rawTimeRange = entry["Дата"].split(',')[2]?.trim();
+            const rawTime = rawTimeRange.split('-')[0]?.trim();
+
+            const [hour, minute] = rawTime.split(':').map(Number);
+            const sessionDate = moment(rawDate, 'DD.MM.YYYY').set({ hour, minute });
+
+            if (!sessionDate.isValid()) {
+                console.error(`Ошибка: некорректная дата "${rawDate}" или время "${rawTime}"`);
+                continue;
+            }
+
+            const timeDiffMinutes = sessionDate.diff(now, 'minutes');
+
+            if (timeDiffMinutes === 1440) {
+                try {
+                    await bot.sendMessage(entry["chatId"],
+                        `Напоминалка! ${entry["Имя ребенка"]} записан завтра в клуб. Ждем вас на встрече! ${entry["Дата"]} по адресу: ${entry["Адрес"]}`);
+                    console.log(`Напоминание отправлено пользователю ${entry["chatId"]}`);
+                } catch (err) {
+                    console.error(`Ошибка при отправке напоминания пользователю ${entry["chatId"]}:`, err.message);
+                }
             }
         }
     });
 }
 
+
 sendReminders();
 
-const monthlyDigest = schedule.scheduleJob('0 12 1 * *', async () => {
-    const digestLinks = getDigestLinks();
-    const message = `Доброго дня! В нашем телеграм-канале мы постоянно публикуем полезные посты. Вот наша подборка статей и материалов за месяц:\n\n${digestLinks.join('\n')}`;
+let digestContent = "Доброго дня! В нашем телеграм-канале мы постоянно публикуем полезные посты. Вот наша подборка статей и материалов за месяц:";
+let digestJob = null;
 
-    for (const user of registeredUsers) {
-        await bot.sendMessage(user.chatId, message);
-    }
-});
+function sendMonthlyDigest() {
+    schedule.scheduleJob('0 12 1 * *', async () => {
 
-let digestLinks = [];
-function setDigestLinks(newLinks) {
-    digestLinks = newLinks;
-}
-
-function getDigestLinks() {
-    return digestLinks;
+    });
 }
 
 async function sendAdminPanel(chatId) {
-    await bot.sendMessage(chatId, 'Добро пожаловать в админ-панель. Выберите действие:', {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: 'Посмотреть заявки', callback_data: 'view_requests' }],
-                [{ text: 'Настроить дайджест', callback_data: 'set_digest' }],
-                [{ text: 'Отправить пост', callback_data: 'send_post' }]
-            ]
-        }
+    const buttons = [
+        [{ text: 'Посмотреть заявки', callback_data: 'view_requests' }],
+        [{ text: 'Настроить дайджест', callback_data: 'digest_settings' }],
+        [{ text: 'Отправить пост', callback_data: 'send_post' }],
+        [{ text: 'Редактировать вопросы', callback_data: 'edit_questions' }],
+        [{ text: 'Удалить дату из расписания', callback_data: 'delete_date' }]
+    ]
+
+    if (chatId.toString() === superAdminId) {
+        buttons.push([{text: "Управление администраторами", callback_data: "manage_admins"}]);
+    }
+
+    await bot.sendMessage(chatId, "Добро пожаловать в админ-панель. Выберите действие:", {
+        reply_markup: { inline_keyboard: buttons }
     });
 }
 
@@ -736,20 +908,14 @@ async function sendDateSelection(chatId, type) {
     }
 
     const buttons = filteredDates.map(date => [{ text: date, callback_data: `date_${date}` }]);
+    buttons.push(
+        [{ text: 'Закрыть ❎', callback_data: 'delete_action' }]
+    )
 
     await bot.sendMessage(chatId, `Выберите дату для просмотра ${type === "past" ? "прошедших" : "будущих"} заявок.`, {
         reply_markup: { inline_keyboard: buttons }
     });
 }
-
-function sortRequestsByDate(requests) {
-    return requests.sort((a, b) => {
-        const dateA = moment(a["Дата"], 'DD.MM.YYYY');
-        const dateB = moment(b["Дата"], 'DD.MM.YYYY');
-        return dateA - dateB;
-    });
-}
-
 async function viewRequestsByDate(chatId, date) {
     if (!fs.existsSync(filePath)) {
         await bot.sendMessage(chatId, "Таблица с заявками пока пуста.");
@@ -768,7 +934,7 @@ async function viewRequestsByDate(chatId, date) {
     }
 
     const formattedRequests = filteredRequests.map((entry, index) =>
-        `${index + 1}. Имя ребенка: ${entry["Имя ребенка"]}, Имя родителя: ${entry["Имя родителя"]}, Телефон: ${entry["Телефон"]}`
+        `${index + 1}. Имя ребенка: ${entry["Имя ребенка"]}, Имя родителя: ${entry["Имя родителя"]}, Запрос: ${entry["Запрос"]}, Телефон: ${entry["Телефон"]}`
     ).join("\n");
 
     await bot.sendMessage(chatId, `Заявки на ${date}:\n\n${formattedRequests}`);
@@ -798,7 +964,7 @@ async function showPastRecords(chatId) {
     }
 
     const formattedRecords = pastRecords.map((entry, index) =>
-        `${index + 1}. ${entry["Дата"]} ${entry["Время"]} - Имя ребенка: ${entry["Имя ребенка"]}, Запрос: ${entry["Запрос"]}`
+        `${index + 1}. ${entry["Дата"]} - Имя ребенка: ${entry["Имя ребенка"]}, Запрос: ${entry["Запрос"]}`
     ).join("\n");
 
     await bot.sendMessage(chatId, `Ваши прошедшие записи:\n\n${formattedRecords}`);
@@ -843,7 +1009,6 @@ async function viewActiveRecord(chatId, date) {
     const worksheet = workbook.Sheets[workbook.SheetNames[0]];
     const data = XLSX.utils.sheet_to_json(worksheet);
 
-    // Фильтрация всех активных записей на выбранную дату для пользователя
     const records = data.filter(entry =>
         entry["Дата"] === date && entry["chatId"] === chatId && entry["Отменена"] !== true
     );
@@ -853,19 +1018,16 @@ async function viewActiveRecord(chatId, date) {
         return;
     }
 
-    // Формирование списка записей
     const messageText = records.map((entry, index) =>
         `${index + 1}. Имя ребенка: ${entry["Имя ребенка"]}, Запрос: ${entry["Запрос"]}`
     ).join("\n");
 
     const buttons = [];
 
-    // Если больше одной записи — добавить кнопку "Отменить все записи"
     if (records.length > 1) {
         buttons.push([{ text: "Отменить все записи", callback_data: `cancel_all_${date}` }]);
     }
 
-    // Добавление индивидуальных кнопок отмены для каждой записи
     records.forEach((entry, index) => {
         const buttonText = records.length === 1
             ? "Отменить запись"
@@ -886,7 +1048,6 @@ async function cancelRecordById(chatId, recordId) {
     const worksheet = workbook.Sheets[workbook.SheetNames[0]];
     const data = XLSX.utils.sheet_to_json(worksheet);
 
-    // Пометка записи как отмененной
     const updatedData = data.map(entry => {
         if (entry["ID"] === recordId) {
             entry["Отменена"] = true;
@@ -898,6 +1059,7 @@ async function cancelRecordById(chatId, recordId) {
     workbook.Sheets["Заявки"] = newWorksheet;
     XLSX.writeFile(workbook, filePath);
 
+    await uploadToYandexDisk(filePath, yandexToken, remotePath);
     await bot.sendMessage(chatId, "Запись успешно отменена.");
     await showActiveRecords(chatId);
 }
@@ -907,7 +1069,6 @@ async function cancelAllRecords(chatId, date) {
     const worksheet = workbook.Sheets[workbook.SheetNames[0]];
     const data = XLSX.utils.sheet_to_json(worksheet);
 
-    // Пометка всех записей на выбранную дату как отмененных
     const updatedData = data.map(entry => {
         if (entry["Дата"] === date && entry["chatId"] === chatId) {
             entry["Отменена"] = true;
@@ -919,6 +1080,341 @@ async function cancelAllRecords(chatId, date) {
     workbook.Sheets["Заявки"] = newWorksheet;
     XLSX.writeFile(workbook, filePath);
 
+    await uploadToYandexDisk(filePath, yandexToken, remotePath);
     await bot.sendMessage(chatId, "Все записи на выбранную дату успешно отменены.");
     await showActiveRecords(chatId);
+}
+
+async function sendSuperAdminPanel(chatId) {
+    const options = {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: 'Посмотреть администраторов', callback_data: 'view_admins' }],
+                [{ text: 'Добавить администратора', callback_data: 'add_admin' }],
+                [{ text: 'Удалить администратора', callback_data: 'remove_admin' }],
+                [{ text: "Закрыть ❎", callback_data: 'delete_action' }]
+            ]
+        }
+    };
+    await bot.sendMessage(chatId, 'Выберите действие для управления администраторами:', options);
+}
+
+async function showAdmins(chatId) {
+    let admins = [];
+
+    if (fs.existsSync(adminsFilePath)) {
+         admins = JSON.parse(fs.readFileSync(adminsFilePath, 'utf8'));
+    }
+
+    const adminList = admins.length > 0 ? admins.join('\n') : 'Администраторы не найдены.';
+
+    await bot.sendMessage(chatId, `ID администраторов:\n${adminList}`);
+}
+
+async function addAdmin(chatId) {
+    adminSessions[chatId] = { action: 'add_admin' };
+    await bot.sendMessage(chatId, "Введите ID нового администратора:", {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: "Закрыть ❎", callback_data: 'delete_action' }]
+            ]
+        }
+    });
+    bot.once('message', (msg) => {
+        if (adminSessions[chatId]?.action === 'add_admin') {
+            const newAdminId = msg.text;
+            let admins = [];
+
+            if (fs.existsSync(adminsFilePath)) {
+                admins = JSON.parse(fs.readFileSync(adminsFilePath, 'utf8'));
+            }
+
+            delete adminSessions[chatId];
+            if (!admins.includes(newAdminId)) {
+                admins.push(newAdminId);
+                fs.writeFileSync(adminsFilePath, JSON.stringify(admins));
+                bot.sendMessage(chatId, `Администратор с ID ${newAdminId} успешно добавлен.`);
+            } else {
+                bot.sendMessage(chatId, "Администратор c таким ID уже существует.");
+            }
+        }
+    });
+}
+
+async function removeAdmin(chatId) {
+    adminSessions[chatId] = { action: 'remove_admin' };
+    await bot.sendMessage(chatId, "Введите ID администратора для удаления:", {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: "Закрыть ❎", callback_data: 'delete_action' }]
+            ]
+        }
+    });
+    bot.once('message', (msg) => {
+        if (adminSessions[chatId]?.action === 'remove_admin') {
+            const adminId = msg.text;
+            let admins = [];
+
+            if (fs.existsSync(adminsFilePath)) {
+                admins = JSON.parse(fs.readFileSync(adminsFilePath, 'utf8'));
+            }
+
+            delete adminSessions[chatId];
+
+            if (admins.includes(adminId)) {
+                admins = admins.filter(id => id !== adminId);
+                fs.writeFileSync(adminsFilePath, JSON.stringify(admins));
+                bot.sendMessage(chatId, `Администратор с ID ${adminId} успешно удален.`);
+            } else {
+                bot.sendMessage(chatId, "Администратор с таким ID не найден.");
+            }
+        }
+    });
+}
+
+function loadQuestions() {
+    if (fs.existsSync(questionsFilePath)) {
+        return JSON.parse(fs.readFileSync(questionsFilePath, 'utf8'));
+    }
+    return [];
+}
+
+function saveQuestions(questions) {
+    fs.writeFileSync(questionsFilePath, JSON.stringify(questions, null, 2));
+}
+
+async function showQuestionsEditor(chatId) {
+    const questions = loadQuestions();
+
+    const buttons = questions.map((q, index) =>
+        [{ text: `Редактировать: ${index + 1}. ${q.question}`, callback_data: `edit_question_${index}` },
+            {text: `Удалить: ${index + 1}`, callback_data: `delete_question_${index}`}]
+    );
+
+    buttons.push(
+        [{ text: "Добавить новый вопрос", callback_data: "add_question" }],
+        [{ text: "Закрыть ❎", callback_data: "delete_action" }]
+    );
+
+    await bot.sendMessage(chatId, "Редактор вопросов. Выберите действие:", {
+        reply_markup: { inline_keyboard: buttons }
+    });
+}
+
+async function getMessage(chatId) {
+    bot.once('message', async (msg) => {
+        const session = adminSessions[chatId];
+        const questions = loadQuestions();
+
+        if (session?.action === 'add_question') {
+            const delimiterIndex = msg.text.indexOf('?');
+            if (delimiterIndex !== -1) {
+                const question = msg.text.slice(0, delimiterIndex + 1).trim();
+                const answer = msg.text.slice(delimiterIndex + 1).trim();
+                questions.push({ question, answer });
+            } else {
+                await bot.sendMessage(chatId, "Ошибка: Вопрос должен содержать знак '?'. Попробуйте снова.");
+                return;
+            }
+        } else if (session?.action === 'edit_question') {
+            const delimiterIndex = msg.text.indexOf('?');
+            if (delimiterIndex !== -1) {
+                const question = msg.text.slice(0, delimiterIndex + 1).trim();
+                const answer = msg.text.slice(delimiterIndex + 1).trim();
+                questions[session.index] = { question, answer };
+            } else {
+                await bot.sendMessage(chatId, "Ошибка: Вопрос должен содержать знак '?'. Попробуйте снова.");
+                return;
+            }
+        }
+
+        await saveQuestions(questions);
+        delete adminSessions[chatId];
+        await bot.sendMessage(chatId, "Изменения сохранены.");
+        await showQuestionsEditor(chatId);
+    });
+}
+
+db.serialize(() => {
+    db.run("CREATE TABLE IF NOT EXISTS users (chatId TEXT UNIQUE)");
+});
+
+function addUserToDatabase(chatId) {
+    const formattedChatId = chatId.toString();
+    db.run("INSERT OR IGNORE INTO users (chatId) VALUES (?)", [formattedChatId], (err) => {
+        if (err) {
+            console.error("Ошибка добавления пользователя в базу данных:", err.message);
+        }
+    });
+}
+
+db.serialize(() => {
+    db.run("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)");
+    updateSetting('digest_time', '1 12:00');
+});
+
+function updateDigestTime(day, time) {
+    const value = `${day} ${time}`;
+    updateSetting('digest_time', value);
+}
+
+function updateSetting(key, value) {
+    db.run("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [key, value], (err) => {
+        if (err) {
+            console.error("Ошибка обновления настройки:", err.message);
+        }
+    });
+}
+
+function getSetting(key, callback) {
+    db.get("SELECT value FROM settings WHERE key = ?", [key], (err, row) => {
+        if (err) {
+            console.error("Ошибка получения настройки:", err.message);
+        } else {
+            callback(row ? row.value : null);
+        }
+    });
+}
+
+function sendDigestToAllUsers(digestContent) {
+    db.all("SELECT chatId FROM users", [], async (err, rows) => {
+        if (err) {
+            console.error("Ошибка чтения пользователей из базы данных:", err.message);
+            return;
+        }
+        for (const row of rows) {
+            try {
+                await bot.sendMessage(row.chatId, digestContent);
+            } catch (err) {
+                console.error(`Ошибка отправки сообщения пользователю ${row.chatId}:`, err.message);
+            }
+        }
+    });
+}
+
+getSetting('digest_time', (digestTime) => {
+    if (!digestTime) {
+        console.error("Время для дайджеста не настроено.");
+        return;
+    }
+
+    const [day, time] = digestTime.split(' ');
+    const [hour, minute] = time.split(':').map(Number);
+    const timezone = 'Asia/Yekaterinburg';
+
+    const serverTime = moment.tz(
+        { year: moment().year(), month: moment().month(), day: parseInt(day), hour, minute },
+        timezone
+    ).toDate();
+
+    schedule.scheduleJob(serverTime, () => {
+        sendDigestToAllUsers(digestContent);
+    });
+});
+
+function restartDigestJob() {
+    if (digestJob) {
+        digestJob.cancel();
+    }
+
+    getSetting('digest_time', (digestTime) => {
+        if (!digestTime) {
+            console.error("Время для дайджеста не настроено.");
+            return;
+        }
+
+        const [day, time] = digestTime.split(' ');
+        const [hour, minute] = time.split(':').map(Number);
+        const timezone = 'Asia/Yekaterinburg';
+
+        const nextDigestTime = moment.tz(
+            { year: moment().year(), month: moment().month(), day: parseInt(day), hour, minute },
+            timezone
+        );
+
+        if (nextDigestTime.isBefore(moment())) {
+            nextDigestTime.add(1, 'month');
+        }
+
+        digestJob = schedule.scheduleJob(nextDigestTime.toDate(), () => {
+            sendDigestToAllUsers(digestContent);
+            restartDigestJob();
+        });
+    });
+}
+
+restartDigestJob();
+
+async function deleteDateAndNotify(date, adminChatId) {
+    blockedDates.push(date);
+    saveBlockedDates();
+
+    const workbook = XLSX.readFile(filePath);
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(worksheet);
+
+    console.log('Удаляемая дата:', date);
+    console.log('Все данные из Excel:', data);
+
+    const affectedUsers = data.filter(entry => entry["Дата"] === date && !entry["Отменена"]);
+    console.log('affectedUsers:', affectedUsers);
+
+    const updatedData = data.map(entry => {
+        if (entry["Дата"] === date) {
+            entry["Отменена"] = true;
+        }
+        return entry;
+    });
+
+    workbook.Sheets[workbook.SheetNames[0]] = XLSX.utils.json_to_sheet(updatedData);
+    XLSX.writeFile(workbook, filePath);
+
+    for (const user of affectedUsers) {
+        try {
+            console.log('Отправка уведомления пользователю:', user);
+            await bot.sendMessage(user["chatId"], `Ваше занятие на ${date} было отменено организаторами. Извините за неудобства.`);
+        } catch (err) {
+            console.error(`Ошибка отправки уведомления пользователю ${user["chatId"]}:`, err.message);
+        }
+    }
+
+    await bot.sendMessage(adminChatId, `Дата ${date} успешно удалена, пользователи уведомлены.`);
+}
+
+if (fs.existsSync(blockedDatesFile)) {
+    blockedDates.push(...JSON.parse(fs.readFileSync(blockedDatesFile, 'utf8')));
+}
+
+function saveBlockedDates() {
+    fs.writeFileSync(blockedDatesFile, JSON.stringify(blockedDates, null, 2));
+}
+
+function enqueueSaveOperation(data, filePath, chatId) {
+    saveQueue.push({ data, filePath });
+
+    if (saveQueue.length === 1) {
+        processSaveQueue(chatId);
+    }
+}
+
+function processSaveQueue(chatId) {
+    if (saveQueue.length === 0) return;
+
+    const { data, filePath } = saveQueue[0];
+
+    try {
+        saveToExcel(data, filePath, chatId);
+        console.log(`Файл успешно сохранён: ${filePath}`);
+        saveQueue.shift();
+        processSaveQueue();
+    } catch (err) {
+        if (err.code === 'EBUSY') {
+            console.warn(`Файл ${filePath} занят, повторная попытка через 5 секунд...`);
+            setTimeout(processSaveQueue, 5000);
+        } else {
+            console.error(`Ошибка при сохранении файла: ${err.message}`);
+            saveQueue.shift();
+            processSaveQueue();
+        }
+    }
 }
